@@ -7,7 +7,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/arborlogic/rurushu-go/provider"
+	"github.com/masato25/rurushu-go/provider"
 )
 
 func TestOpenCreatesPrivateProjectStateAndSession(t *testing.T) {

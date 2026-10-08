@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/arborlogic/rurushu-go/harness"
-	"github.com/arborlogic/rurushu-go/provider"
-	"github.com/arborlogic/rurushu-go/tool"
+	"github.com/masato25/rurushu-go/harness"
+	"github.com/masato25/rurushu-go/provider"
+	"github.com/masato25/rurushu-go/tool"
 )
 
 func TestExecuteHeadlessRejectsUnsupportedVersion(t *testing.T) {

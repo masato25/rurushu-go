@@ -9,7 +9,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/arborlogic/rurushu-go/permission"
+	"github.com/masato25/rurushu-go/permission"
 )
 
 const maxExternalToolOutput = 64 * 1024

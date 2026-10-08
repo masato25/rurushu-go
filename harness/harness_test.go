@@ -8,9 +8,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/arborlogic/rurushu-go/permission"
-	"github.com/arborlogic/rurushu-go/provider"
-	"github.com/arborlogic/rurushu-go/tool"
+	"github.com/masato25/rurushu-go/permission"
+	"github.com/masato25/rurushu-go/provider"
+	"github.com/masato25/rurushu-go/tool"
 )
 
 type scriptedProvider struct {

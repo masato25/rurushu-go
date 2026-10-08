@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
-	"github.com/arborlogic/rurushu-go/provider"
+	"github.com/masato25/rurushu-go/provider"
 )
 
 type ActivityMode string

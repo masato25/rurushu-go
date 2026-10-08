@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/arborlogic/rurushu-go/jobs"
-	"github.com/arborlogic/rurushu-go/permission"
-	"github.com/arborlogic/rurushu-go/tool"
+	"github.com/masato25/rurushu-go/jobs"
+	"github.com/masato25/rurushu-go/permission"
+	"github.com/masato25/rurushu-go/tool"
 )
 
 const maxBashOutput = 64 * 1024

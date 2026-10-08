@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/arborlogic/rurushu-go/permission"
+	"github.com/masato25/rurushu-go/permission"
 )
 
 type Result struct {

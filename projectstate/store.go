@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/arborlogic/rurushu-go/provider"
+	"github.com/masato25/rurushu-go/provider"
 )
 
 const Version = 1

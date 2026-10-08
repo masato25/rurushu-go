@@ -8,8 +8,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"github.com/arborlogic/rurushu-go/permission"
-	"github.com/arborlogic/rurushu-go/provider"
+	"github.com/masato25/rurushu-go/permission"
+	"github.com/masato25/rurushu-go/provider"
 )
 
 type fakeStreamer struct {

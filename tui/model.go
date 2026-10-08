@@ -11,10 +11,10 @@ import (
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"github.com/arborlogic/rurushu-go/jobs"
-	"github.com/arborlogic/rurushu-go/permission"
-	"github.com/arborlogic/rurushu-go/projectstate"
-	"github.com/arborlogic/rurushu-go/provider"
+	"github.com/masato25/rurushu-go/jobs"
+	"github.com/masato25/rurushu-go/permission"
+	"github.com/masato25/rurushu-go/projectstate"
+	"github.com/masato25/rurushu-go/provider"
 )
 
 type Message struct {

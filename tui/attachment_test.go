@@ -12,7 +12,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/arborlogic/rurushu-go/provider"
+	"github.com/masato25/rurushu-go/provider"
 )
 
 func writePNG(t *testing.T, path string, width, height int, noisy bool) {

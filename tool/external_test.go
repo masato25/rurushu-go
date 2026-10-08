@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/arborlogic/rurushu-go/permission"
+	"github.com/masato25/rurushu-go/permission"
 )
 
 func TestExternalToolForwardsJSONAndReadOnlySkipsPermission(t *testing.T) {

@@ -12,15 +12,15 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	rurushuconfig "github.com/arborlogic/rurushu-go/config"
-	"github.com/arborlogic/rurushu-go/harness"
-	"github.com/arborlogic/rurushu-go/jobs"
-	"github.com/arborlogic/rurushu-go/permission"
-	"github.com/arborlogic/rurushu-go/projectstate"
-	"github.com/arborlogic/rurushu-go/provider"
-	"github.com/arborlogic/rurushu-go/tool"
-	"github.com/arborlogic/rurushu-go/tool/builtin"
-	"github.com/arborlogic/rurushu-go/tui"
+	rurushuconfig "github.com/masato25/rurushu-go/config"
+	"github.com/masato25/rurushu-go/harness"
+	"github.com/masato25/rurushu-go/jobs"
+	"github.com/masato25/rurushu-go/permission"
+	"github.com/masato25/rurushu-go/projectstate"
+	"github.com/masato25/rurushu-go/provider"
+	"github.com/masato25/rurushu-go/tool"
+	"github.com/masato25/rurushu-go/tool/builtin"
+	"github.com/masato25/rurushu-go/tui"
 )
 
 type stringList []string

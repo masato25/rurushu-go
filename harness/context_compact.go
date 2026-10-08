@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/arborlogic/rurushu-go/provider"
+	"github.com/masato25/rurushu-go/provider"
 )
 
 const (

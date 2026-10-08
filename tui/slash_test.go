@@ -12,8 +12,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/arborlogic/rurushu-go/jobs"
-	"github.com/arborlogic/rurushu-go/provider"
+	"github.com/masato25/rurushu-go/jobs"
+	"github.com/masato25/rurushu-go/provider"
 )
 
 type slashTestStreamer struct {

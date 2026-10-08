@@ -13,8 +13,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/arborlogic/rurushu-go/tool"
 	"github.com/bmatcuk/doublestar/v4"
+	"github.com/masato25/rurushu-go/tool"
 )
 
 const (

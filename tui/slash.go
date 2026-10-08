@@ -8,7 +8,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/arborlogic/rurushu-go/jobs"
+	"github.com/masato25/rurushu-go/jobs"
 )
 
 // SlashCommand is a lightweight local command handled by the TUI before any

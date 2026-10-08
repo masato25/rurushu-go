@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/arborlogic/rurushu-go/projectstate"
-	"github.com/arborlogic/rurushu-go/provider"
+	"github.com/masato25/rurushu-go/projectstate"
+	"github.com/masato25/rurushu-go/provider"
 )
 
 func (m *Model) SetProjectSession(store *projectstate.Store, session projectstate.Session) {

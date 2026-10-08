@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/arborlogic/rurushu-go/provider"
+	"github.com/masato25/rurushu-go/provider"
 )
 
 func TestCompactContextRetainsObjectiveAndRecentToolTurns(t *testing.T) {

@@ -17,6 +17,21 @@
 
 `rurushu-go` is a lightweight LLM harness and terminal client for Go. The reusable runtime stays independent of GEASS domain logic; the repository also ships an optional Bubble Tea TUI and an OpenAI-compatible HTTP adapter so it can run by itself.
 
+## Install
+
+Install the latest release with Go:
+
+```bash
+go install github.com/masato25/rurushu-go/cmd/rurushu@latest
+```
+
+Then run:
+
+```bash
+rurushu setup
+rurushu
+```
+
 ## Run it standalone
 
 The recommended first run is the interactive setup wizard:

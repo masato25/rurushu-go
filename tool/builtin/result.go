@@ -3,7 +3,7 @@ package builtin
 import (
 	"fmt"
 
-	"github.com/arborlogic/rurushu-go/tool"
+	"github.com/masato25/rurushu-go/tool"
 )
 
 func toolError(title, format string, args ...any) *tool.Result {

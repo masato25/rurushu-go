@@ -9,7 +9,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
-	rurushuconfig "github.com/arborlogic/rurushu-go/config"
+	rurushuconfig "github.com/masato25/rurushu-go/config"
 )
 
 type SetupModel struct {

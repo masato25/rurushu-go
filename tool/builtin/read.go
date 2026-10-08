@@ -8,7 +8,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/arborlogic/rurushu-go/tool"
+	"github.com/masato25/rurushu-go/tool"
 )
 
 const (

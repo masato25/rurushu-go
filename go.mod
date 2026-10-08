@@ -1,4 +1,4 @@
-module github.com/arborlogic/rurushu-go
+module github.com/masato25/rurushu-go
 
 go 1.26.0
 

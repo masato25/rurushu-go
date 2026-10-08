@@ -15,7 +15,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/arborlogic/rurushu-go/provider"
+	"github.com/masato25/rurushu-go/provider"
 	xdraw "golang.org/x/image/draw"
 	_ "golang.org/x/image/webp"
 )

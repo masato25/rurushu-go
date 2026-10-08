@@ -6,8 +6,8 @@ import (
 	"testing"
 
 	"charm.land/bubbletea/v2"
-	"github.com/arborlogic/rurushu-go/projectstate"
-	"github.com/arborlogic/rurushu-go/provider"
+	"github.com/masato25/rurushu-go/projectstate"
+	"github.com/masato25/rurushu-go/provider"
 )
 
 func TestProjectSessionRestoreRebuildsExactHistoryAndToolTranscript(t *testing.T) {

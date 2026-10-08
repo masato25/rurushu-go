@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/arborlogic/rurushu-go/tool"
+	"github.com/masato25/rurushu-go/tool"
 )
 
 func TestReadGlobGrep(t *testing.T) {

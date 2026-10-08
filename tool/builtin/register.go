@@ -1,8 +1,8 @@
 package builtin
 
 import (
-	"github.com/arborlogic/rurushu-go/jobs"
-	"github.com/arborlogic/rurushu-go/tool"
+	"github.com/masato25/rurushu-go/jobs"
+	"github.com/masato25/rurushu-go/tool"
 )
 
 // RegisterReadOnly installs the built-in repository inspection tools.
