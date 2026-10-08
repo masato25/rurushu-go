@@ -60,6 +60,8 @@ Local slash commands are handled by the TUI before a prompt reaches the model. T
 /help   show available local commands
 /clear  clear the transcript and model conversation history
 /exit   exit the TUI
+/jobs [id]  list managed jobs or inspect one job's recent output
+/stop <id>  stop a Rurushu-managed background job
 ```
 
 Unknown slash commands stay local and show an error. Prefix a prompt with `//` when you really want to send leading-slash text to the model; for example, `//help` sends `/help` as a normal prompt.
@@ -68,13 +70,35 @@ Slash commands autocomplete as you type. Enter `/` or a prefix such as `/he`, us
 
 Tool activity is persistent in the transcript. `--activity normal` shows compact tool progress (default), `--activity verbose` adds compact args/result details, and `--activity debug` includes full tool results plus usage/context-compaction events. Raw model chain-of-thought is never rendered; reasoning streams only produce a generic `thinking` progress marker.
 
-The standalone binary includes three read-only repository tools scoped to the active working directory: `read`, `glob`, and `grep`. They reject paths and symlinks that escape `--cwd`. Mutating filesystem and shell tools are intentionally not enabled yet.
+The standalone binary includes read-only repository tools (`read`, `glob`, `grep`) plus permission-gated shell execution (`bash`). Foreground shell commands have bounded output and a timeout. Long-running servers/watchers should use `background=true`; they become managed jobs that survive `/exit` and can be inspected with `job_list`, `job_output`, `/jobs`, and stopped with `job_stop` or `/stop`.
+
+## Project state and managed jobs
+
+Starting Rurushu in a project creates private local state under `.rurushu/`:
+
+```text
+.rurushu/
+├── state.json
+├── sessions/
+│   └── ses_....json
+└── jobs/
+    ├── job_000001.json
+    └── job_000001.log
+```
+
+Directories use mode `0700` and metadata/log files use `0600`. `.rurushu/.gitignore` ignores the entire state directory without modifying the repository's root `.gitignore`, and the built-in repository discovery tools skip `.rurushu`.
+
+Each TUI launch records lightweight session metadata (session ID, model, provider, timestamps). Managed jobs record the command, project CWD, runner PID, process identity, lifecycle status, and a relative log path; environment variables are not serialized. Job logs are rolling files capped at approximately 2 MiB, while `/jobs <id>` and `job_output` read only a bounded recent tail.
+
+On startup Rurushu reconciles jobs left by previous sessions. A job is considered live only when its recorded PID still matches the recorded process identity; a reused or missing PID becomes `stale` rather than being treated as a managed process. The status bar shows the current number of running managed jobs.
 
 ## Packages
 
 - `provider`: model/message/stream contracts, streaming tool-call reconstruction, and an OpenAI-compatible HTTP provider.
 - `tool`: typed Go tool execution plus a thread-safe registry and function schemas.
 - `permission`: approval contracts plus an event-driven TUI permission bridge.
+- `projectstate`: project-local `.rurushu` state and session metadata.
+- `jobs`: persistent managed-job metadata, detached runner lifecycle, process reconciliation, stopping, and bounded logs.
 - `harness`: prompt/context composition, provider → tool → provider control loop, cancellation, step limits, context compaction, result aggregation, and optional result validators.
 - `tui`: reusable Bubble Tea conversation UI for any `Streamer` compatible with the harness.
 - `cmd/rurushu`: standalone terminal entrypoint.

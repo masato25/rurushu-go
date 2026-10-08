@@ -14,7 +14,9 @@ import (
 
 	rurushuconfig "github.com/arborlogic/rurushu-go/config"
 	"github.com/arborlogic/rurushu-go/harness"
+	"github.com/arborlogic/rurushu-go/jobs"
 	"github.com/arborlogic/rurushu-go/permission"
+	"github.com/arborlogic/rurushu-go/projectstate"
 	"github.com/arborlogic/rurushu-go/provider"
 	"github.com/arborlogic/rurushu-go/tool"
 	"github.com/arborlogic/rurushu-go/tool/builtin"
@@ -41,6 +43,9 @@ func main() {
 }
 
 func run(args []string) error {
+	if len(args) > 0 && args[0] == "__job-runner" {
+		return runJobRunner(args[1:])
+	}
 	if len(args) > 0 && args[0] == "setup" {
 		return runSetup(args[1:])
 	}
@@ -108,10 +113,25 @@ func run(args []string) error {
 	if model == "" {
 		return errors.New("model is required; use --model, RURUSHU_MODEL, or OPENAI_MODEL (use --list-models to inspect the endpoint)")
 	}
+	projectStore, err := projectstate.Open(absCWD)
+	if err != nil {
+		return fmt.Errorf("initialize project state: %w", err)
+	}
+	jobManager, err := jobs.Open(absCWD, projectStore.Dir, "")
+	if err != nil {
+		return fmt.Errorf("initialize managed jobs: %w", err)
+	}
+	if _, err := jobManager.List(); err != nil {
+		return fmt.Errorf("reconcile managed jobs: %w", err)
+	}
+	if _, err := projectStore.StartSession(model, prov.ID()); err != nil {
+		return fmt.Errorf("start project session: %w", err)
+	}
 
 	permissionUI := permission.NewTUIHandler()
 	registry := tool.NewRegistry()
 	builtin.RegisterReadOnly(registry)
+	builtin.RegisterExecution(registry, jobManager)
 	client, err := harness.New(prov, harness.Config{
 		CWD:                absCWD,
 		SystemPrompt:       *systemPrompt,
@@ -129,11 +149,35 @@ func run(args []string) error {
 	uiModel := tui.NewWithStreamer(model, prov.ID(), client)
 	uiModel.SetActivityMode(activityMode)
 	uiModel.SetPermissionRequests(permissionUI.Requests())
+	uiModel.SetJobManager(jobManager)
 	if len(fs.Args()) > 0 {
 		uiModel.SetInitialInput(strings.Join(fs.Args(), " "))
 	}
 	_, err = tea.NewProgram(uiModel).Run()
 	return err
+}
+
+func runJobRunner(args []string) error {
+	fs := flag.NewFlagSet("rurushu __job-runner", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	stateDir := fs.String("state-dir", "", "project .rurushu directory")
+	jobID := fs.Int("job", 0, "managed job id")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *jobID <= 0 || strings.TrimSpace(*stateDir) == "" {
+		return errors.New("job runner requires --state-dir and --job")
+	}
+	absState, err := filepath.Abs(strings.TrimSpace(*stateDir))
+	if err != nil {
+		return err
+	}
+	projectRoot := filepath.Dir(absState)
+	manager, err := jobs.Open(projectRoot, absState, "")
+	if err != nil {
+		return err
+	}
+	return manager.RunJob(context.Background(), *jobID)
 }
 
 func runSetup(args []string) error {

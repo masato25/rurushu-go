@@ -24,6 +24,7 @@ var ignoredDirs = map[string]bool{
 	".next": true, "_next": true, ".turbo": true, ".cache": true, "coverage": true, "out": true,
 	".claude": true, ".mimocode": true, ".openzerocode": true,
 	".venv": true, "venv": true, ".tox": true, ".pytest_cache": true,
+	".rurushu": true,
 }
 
 type globArgs struct {

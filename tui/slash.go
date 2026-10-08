@@ -3,9 +3,12 @@ package tui
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/arborlogic/rurushu-go/jobs"
 )
 
 // SlashCommand is a lightweight local command handled by the TUI before any
@@ -77,6 +80,107 @@ func (m *Model) registerDefaultSlashCommands() {
 			return SlashCommandResult{Quit: true}, nil
 		},
 	})
+}
+
+func (m *Model) registerJobSlashCommands() {
+	if m.jobManager == nil {
+		return
+	}
+	_ = m.RegisterSlashCommand(SlashCommand{
+		Name:        "jobs",
+		Usage:       "/jobs [id]",
+		Description: "list managed jobs or show recent output for one job",
+		Run: func(args string) (SlashCommandResult, error) {
+			args = strings.TrimSpace(args)
+			if args == "" {
+				all, err := m.jobManager.List()
+				if err != nil {
+					return SlashCommandResult{}, err
+				}
+				return SlashCommandResult{Output: formatManagedJobs(all)}, nil
+			}
+			id, err := strconv.Atoi(args)
+			if err != nil || id <= 0 {
+				return SlashCommandResult{}, fmt.Errorf("usage: /jobs [id]")
+			}
+			job, err := m.jobManager.Get(id)
+			if err != nil {
+				return SlashCommandResult{}, err
+			}
+			output, err := m.jobManager.Tail(id, 32*1024)
+			if err != nil {
+				return SlashCommandResult{}, err
+			}
+			return SlashCommandResult{Output: formatManagedJobDetail(job, output)}, nil
+		},
+	})
+	_ = m.RegisterSlashCommand(SlashCommand{
+		Name:        "stop",
+		Usage:       "/stop <id>",
+		Description: "stop a Rurushu-managed background job",
+		Run: func(args string) (SlashCommandResult, error) {
+			id, err := strconv.Atoi(strings.TrimSpace(args))
+			if err != nil || id <= 0 {
+				return SlashCommandResult{}, fmt.Errorf("usage: /stop <id>")
+			}
+			job, err := m.jobManager.Stop(id)
+			if err != nil {
+				return SlashCommandResult{}, err
+			}
+			m.runningJobs = m.jobManager.RunningCount()
+			return SlashCommandResult{Output: fmt.Sprintf("stopped job #%d — %s", job.ID, job.Command)}, nil
+		},
+	})
+}
+
+func formatManagedJobs(all []jobs.Job) string {
+	if len(all) == 0 {
+		return "No managed jobs."
+	}
+	var b strings.Builder
+	b.WriteString("managed jobs")
+	for _, job := range all {
+		fmt.Fprintf(&b, "\n\n#%d  %s  %s", job.ID, job.Status, job.Command)
+		if job.RunnerPID > 0 {
+			fmt.Fprintf(&b, "\n    pid %d · %s", job.RunnerPID, humanJobAge(job.StartedAt))
+		}
+		if job.ExitCode != nil {
+			fmt.Fprintf(&b, " · exit %d", *job.ExitCode)
+		}
+	}
+	return b.String()
+}
+
+func formatManagedJobDetail(job jobs.Job, output string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "#%d %s\n%s", job.ID, job.Command, job.Status)
+	if job.RunnerPID > 0 {
+		fmt.Fprintf(&b, " · pid %d · %s", job.RunnerPID, humanJobAge(job.StartedAt))
+	}
+	if strings.TrimSpace(output) != "" {
+		b.WriteString("\n\nlatest output:\n\n")
+		b.WriteString(output)
+	} else {
+		b.WriteString("\n\n(no output yet)")
+	}
+	return b.String()
+}
+
+func humanJobAge(started time.Time) string {
+	if started.IsZero() {
+		return "unknown age"
+	}
+	d := time.Since(started)
+	if d < 0 {
+		d = 0
+	}
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	}
+	return fmt.Sprintf("%dh%02dm", int(d.Hours()), int(d.Minutes())%60)
 }
 
 func (m *Model) slashHelp() string {

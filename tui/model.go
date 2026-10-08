@@ -2,13 +2,16 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/arborlogic/rurushu-go/jobs"
 	"github.com/arborlogic/rurushu-go/permission"
 	"github.com/arborlogic/rurushu-go/provider"
 )
@@ -56,6 +59,8 @@ type Model struct {
 	slashCommands       map[string]SlashCommand
 	slashMatches        []SlashCommand
 	slashMatchIndex     int
+	jobManager          *jobs.Manager
+	runningJobs         int
 }
 
 type streamStartedMsg struct {
@@ -75,6 +80,8 @@ type permissionPromptMsg struct {
 	prompt *permission.Prompt
 	closed bool
 }
+
+type jobRefreshMsg struct{ running int }
 
 const (
 	roleUser      = "user"
@@ -144,6 +151,15 @@ func (m *Model) SetPermissionRequests(requests <-chan *permission.Prompt) {
 	m.permissionRequests = requests
 }
 
+func (m *Model) SetJobManager(manager *jobs.Manager) {
+	m.jobManager = manager
+	m.registerJobSlashCommands()
+	if manager != nil {
+		m.runningJobs = manager.RunningCount()
+	}
+	m.refreshConversation()
+}
+
 func (m *Model) SetActivityMode(mode ActivityMode) {
 	if mode == "" {
 		mode = ActivityNormal
@@ -156,6 +172,9 @@ func (m *Model) Init() tea.Cmd {
 	cmds := []tea.Cmd{m.composer.Focus()}
 	if m.permissionRequests != nil {
 		cmds = append(cmds, waitForPermission(m.permissionRequests))
+	}
+	if m.jobManager != nil {
+		cmds = append(cmds, refreshJobs(m.jobManager))
 	}
 	return tea.Batch(cmds...)
 }
@@ -196,6 +215,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.composer.Blur()
 		m.layout()
 		return m, nil
+
+	case jobRefreshMsg:
+		m.runningJobs = msg.running
+		return m, tea.Tick(2*time.Second, func(time.Time) tea.Msg {
+			if m.jobManager == nil {
+				return jobRefreshMsg{}
+			}
+			return jobRefreshMsg{running: m.jobManager.RunningCount()}
+		})
 
 	case streamEventMsg:
 		if msg.id != m.activeStream || !m.streaming {
@@ -546,8 +574,27 @@ func (m *Model) statusView() string {
 	} else if m.streaming {
 		state = "  streaming"
 	}
+	if m.runningJobs > 0 {
+		state += "  " + jobCountLabel(m.runningJobs)
+	}
 	details := truncate(model+state, max(1, width-7))
 	return statusNameStyle.Render("rurushu") + mutedStyle.Render("  "+details)
+}
+
+func refreshJobs(manager *jobs.Manager) tea.Cmd {
+	return func() tea.Msg {
+		if manager == nil {
+			return jobRefreshMsg{}
+		}
+		return jobRefreshMsg{running: manager.RunningCount()}
+	}
+}
+
+func jobCountLabel(count int) string {
+	if count == 1 {
+		return "1 job"
+	}
+	return fmt.Sprintf("%d jobs", count)
 }
 
 func (m *Model) completionRequest() provider.CompletionRequest {

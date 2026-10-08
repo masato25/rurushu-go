@@ -2,11 +2,16 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/arborlogic/rurushu-go/jobs"
 	"github.com/arborlogic/rurushu-go/provider"
 )
 
@@ -258,5 +263,44 @@ func TestDoubleSlashDoesNotAutocomplete(t *testing.T) {
 	m.updateSlashAutocomplete()
 	if len(m.slashMatches) != 0 {
 		t.Fatalf("double slash unexpectedly autocompleted: %#v", m.slashMatches)
+	}
+}
+
+func TestJobSlashCommandsUseProjectManager(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, ".rurushu")
+	jobsDir := filepath.Join(stateDir, "jobs")
+	if err := os.MkdirAll(jobsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	job := jobs.Job{
+		ID: 1, Command: "npm run dev", CWD: root, Status: jobs.StatusExited,
+		StartedAt: time.Now().Add(-time.Minute), LogPath: "jobs/job_000001.log",
+	}
+	data, err := json.Marshal(job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(jobsDir, "job_000001.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manager, err := jobs.Open(root, stateDir, os.Args[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := New("test-model", "test-provider")
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.SetJobManager(manager)
+
+	for _, name := range []string{"jobs", "stop"} {
+		if _, ok := m.slashCommands[name]; !ok {
+			t.Fatalf("/%s was not registered", name)
+		}
+	}
+	if cmd := submitSlashTest(t, m, "/jobs"); cmd != nil {
+		t.Fatal("/jobs unexpectedly started async work")
+	}
+	if len(m.messages) != 2 || !strings.Contains(m.messages[1].Content, "#1") || !strings.Contains(m.messages[1].Content, "npm run dev") {
+		t.Fatalf("unexpected /jobs output: %#v", m.messages)
 	}
 }
