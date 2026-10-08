@@ -1,17 +1,57 @@
 # rurushu-go
 
-`rurushu-go` is a small, provider-agnostic LLM harness for Go services. It was extracted from the reusable model/tool execution core in GEASS-TI and intentionally does not depend on GEASS runtime, research, NATS, UI, or persistence packages.
+`rurushu-go` is a lightweight LLM harness and terminal client for Go. The reusable runtime stays independent of GEASS domain logic; the repository also ships an optional Bubble Tea TUI and an OpenAI-compatible HTTP adapter so it can run by itself.
 
-The module owns four concerns:
+## Run it standalone
 
-- `provider`: model/message/stream contracts and streaming tool-call reconstruction.
+With OpenAI:
+
+```bash
+export OPENAI_API_KEY=...
+go run ./cmd/rurushu --model <model-name>
+```
+
+With an OpenAI-compatible gateway:
+
+```bash
+go run ./cmd/rurushu \
+  --base-url http://localhost:8081/v1 \
+  --model <model-name>
+```
+
+You can also use `RURUSHU_API_KEY`, `RURUSHU_BASE_URL`, and `RURUSHU_MODEL`. Rurushu accepts a positional draft so the TUI opens with text already in the composer:
+
+```bash
+go run ./cmd/rurushu --model <model-name> "summarize what I should work on"
+```
+
+To inspect models exposed by the endpoint:
+
+```bash
+go run ./cmd/rurushu --base-url http://localhost:8081/v1 --list-models
+```
+
+Build a local binary with:
+
+```bash
+go build -o bin/rurushu ./cmd/rurushu
+./bin/rurushu --model <model-name>
+```
+
+TUI controls: `Enter` sends, `Shift+Enter` inserts a newline, `Esc` cancels the active model request, `PgUp/PgDn` scroll, and `Ctrl+C` exits. Permission prompts are approved with `y` and denied with `n`, `Enter`, or `Esc`.
+
+The standalone binary currently ships without built-in filesystem or shell tools. The harness supports tools, but applications must register the capabilities they actually want to expose.
+
+## Packages
+
+- `provider`: model/message/stream contracts, streaming tool-call reconstruction, and an OpenAI-compatible HTTP provider.
 - `tool`: typed Go tool execution plus a thread-safe registry and function schemas.
-- `permission`: a minimal approval contract with allow-all and deny-all defaults.
+- `permission`: approval contracts plus an event-driven TUI permission bridge.
 - `harness`: prompt/context composition, provider → tool → provider control loop, cancellation, step limits, context compaction, result aggregation, and optional result validators.
+- `tui`: reusable Bubble Tea conversation UI for any `Streamer` compatible with the harness.
+- `cmd/rurushu`: standalone terminal entrypoint.
 
-It has no third-party dependencies.
-
-## Minimal use
+## Library use
 
 ```go
 registry := tool.NewRegistry()
@@ -36,10 +76,8 @@ result, err := runner.Run(ctx, provider.CompletionRequest{
 })
 ```
 
-Implement `provider.Provider` for the model backend you want to use. Provider-specific HTTP clients deliberately live outside the core so the harness can be embedded without pulling in an SDK or a particular vendor.
-
-`harness.ContextSource` is similarly generic: applications can inject memory, retrieval, project state, or no extra context at all. Tools receive a `tool.ExecutionContext` with the working directory, metadata, and an optional permission callback.
+`provider.Provider` only requires streaming. Model listing is an optional capability. `harness.ContextSource` is generic, so applications can inject memory, retrieval, project state, or no extra context at all.
 
 ## Design boundary
 
-The harness does **not** own queues, workers, retries for business jobs, checkpoints, durable memory, UI, agent planning modes, or domain workflows. Those belong to the embedding application. The harness is only responsible for one model interaction lifecycle and the tool calls that occur inside it.
+The harness does not own queues, worker scheduling, business-job retries, checkpoints, durable memory, agent planning modes, or domain workflows. Those stay in the embedding application. The optional TUI and OpenAI-compatible adapter sit on top of the same library contracts rather than being required by the harness core.
