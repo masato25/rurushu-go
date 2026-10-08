@@ -46,6 +46,9 @@ func run(args []string) error {
 	if len(args) > 0 && args[0] == "__job-runner" {
 		return runJobRunner(args[1:])
 	}
+	if len(args) > 0 && args[0] == "run" && headlessRunRequested(args[1:]) {
+		return runHeadlessCLI(args[1:])
+	}
 	if len(args) > 0 && args[0] == "setup" {
 		return runSetup(args[1:])
 	}

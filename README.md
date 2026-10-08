@@ -52,6 +52,29 @@ go build -o bin/rurushu ./cmd/rurushu
 ./bin/rurushu --model <model-name>
 ```
 
+For workflow orchestrators and other non-interactive callers, Rurushu also
+provides a versioned JSON execution boundary. The caller and Rurushu remain
+separate processes and do not need to share Go packages:
+
+```bash
+printf '%s\n' '{
+  "version": 1,
+  "task": "inspect this workspace and summarize the requested change",
+  "cwd": "/path/to/workspace",
+  "model": "model-name",
+  "tool_profile": "readonly",
+  "permission_mode": "deny"
+}' | rurushu run
+```
+
+When JSON is piped to `rurushu run` (or `--input`/`--output` is used), the
+command writes exactly one JSON response to stdout/output. Plain positional
+text such as `rurushu run tests` remains a TUI initial prompt for compatibility.
+`tool_profile` is
+`none`, `readonly` (default), or `execution`; execution tools still require an
+explicit `permission_mode: "allow"`. Provider credentials and endpoint remain
+Rurushu configuration concerns (`RURUSHU_*`, `OPENAI_*`, or its saved config).
+
 TUI controls: `Enter` sends, `Shift+Enter` inserts a newline, `Esc` cancels the active model request, `PgUp/PgDn` scroll, and `Ctrl+C` exits. Permission prompts are approved with `y` and denied with `n`, `Enter`, or `Esc`.
 
 Local slash commands are handled by the TUI before a prompt reaches the model. The standalone client currently includes:
