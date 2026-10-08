@@ -54,6 +54,15 @@ go build -o bin/rurushu ./cmd/rurushu
 
 TUI controls: `Enter` sends, `Shift+Enter` inserts a newline, `Esc` cancels the active model request, `PgUp/PgDn` scroll, and `Ctrl+C` exits. Permission prompts are approved with `y` and denied with `n`, `Enter`, or `Esc`.
 
+Local slash commands are handled by the TUI before a prompt reaches the model. The standalone client currently includes:
+
+```text
+/help   show available local commands
+/clear  clear the transcript and model conversation history
+```
+
+Unknown slash commands stay local and show an error. Prefix a prompt with `//` when you really want to send leading-slash text to the model; for example, `//help` sends `/help` as a normal prompt.
+
 Tool activity is persistent in the transcript. `--activity normal` shows compact tool progress (default), `--activity verbose` adds compact args/result details, and `--activity debug` includes full tool results plus usage/context-compaction events. Raw model chain-of-thought is never rendered; reasoning streams only produce a generic `thinking` progress marker.
 
 The standalone binary includes three read-only repository tools scoped to the active working directory: `read`, `glob`, and `grep`. They reject paths and symlinks that escape `--cwd`. Mutating filesystem and shell tools are intentionally not enabled yet.
@@ -93,6 +102,22 @@ result, err := runner.Run(ctx, provider.CompletionRequest{
 ```
 
 `provider.Provider` only requires streaming. Model listing is an optional capability. `harness.ContextSource` is generic, so applications can inject memory, retrieval, project state, or no extra context at all.
+
+Embedding applications can add lightweight TUI-only slash commands without changing the harness or provider layers:
+
+```go
+uiModel := tui.NewWithStreamer(modelName, providerID, runner)
+err := uiModel.RegisterSlashCommand(tui.SlashCommand{
+    Name:        "project",
+    Usage:       "/project <name>",
+    Description: "switch the local project context",
+    Run: func(args string) (tui.SlashCommandResult, error) {
+        return tui.SlashCommandResult{Output: "selected " + args}, nil
+    },
+})
+```
+
+Slash command input and output are local UI state and are not appended to model conversation history.
 
 ## Design boundary
 

@@ -53,6 +53,7 @@ type Model struct {
 	streamReasoningText string
 	activityMode        ActivityMode
 	thinkingVisible     bool
+	slashCommands       map[string]SlashCommand
 }
 
 type streamStartedMsg struct {
@@ -117,6 +118,7 @@ func NewWithStreamer(modelName, providerID string, llm Streamer) *Model {
 		llm:          llm,
 		activityMode: ActivityNormal,
 	}
+	m.registerDefaultSlashCommands()
 	m.refreshConversation()
 	return m
 }
@@ -265,8 +267,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if value == "" {
 				return m, nil
 			}
-			m.messages = append(m.messages, Message{Role: roleUser, Content: value})
 			m.composer.Reset()
+			if m.runSlashCommand(value) {
+				m.refreshConversation()
+				m.layout()
+				m.viewport.GotoBottom()
+				return m, nil
+			}
+			value = unescapeSlashPrompt(value)
+			m.messages = append(m.messages, Message{Role: roleUser, Content: value})
 
 			if m.llm != nil {
 				m.history = append(m.history, provider.Message{Role: provider.RoleUser, Content: value})
