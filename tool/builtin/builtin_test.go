@@ -17,6 +17,9 @@ func TestReadGlobGrep(t *testing.T) {
 	mustWrite(t, filepath.Join(root, "pkg", "core", "a.go"), "package core\nfunc Alpha() string { return \"magic-keyword\" }\n")
 	mustWrite(t, filepath.Join(root, "pkg", "core", "b.txt"), "hello\n")
 	mustWrite(t, filepath.Join(root, ".git", "hidden.go"), "magic-keyword\n")
+	mustWrite(t, filepath.Join(root, ".next", "generated.go"), "magic-keyword\n")
+	mustWrite(t, filepath.Join(root, ".next-dev", "generated.go"), "magic-keyword\n")
+	mustWrite(t, filepath.Join(root, ".env.local"), "SECRET=do-not-discover\n")
 	execCtx := &tool.ExecutionContext{CWD: root}
 
 	readResult := execute(t, &ReadTool{}, execCtx, map[string]any{"path": "pkg/core/a.go", "offset": 2, "limit": 1})
@@ -25,13 +28,33 @@ func TestReadGlobGrep(t *testing.T) {
 	}
 
 	globResult := execute(t, &GlobTool{}, execCtx, map[string]any{"pattern": "**/*.go"})
-	if globResult.IsError || !strings.Contains(globResult.Output, "pkg/core/a.go") || strings.Contains(globResult.Output, ".git") {
+	if globResult.IsError || !strings.Contains(globResult.Output, "pkg/core/a.go") || strings.Contains(globResult.Output, ".git") || strings.Contains(globResult.Output, ".next") || strings.Contains(globResult.Output, ".env.local") {
 		t.Fatalf("unexpected glob result: %+v", globResult)
 	}
 
 	grepResult := execute(t, &GrepTool{}, execCtx, map[string]any{"pattern": "magic-keyword", "include": "**/*.go"})
-	if grepResult.IsError || !strings.Contains(grepResult.Output, "pkg/core/a.go:2:") || strings.Contains(grepResult.Output, ".git") {
+	if grepResult.IsError || !strings.Contains(grepResult.Output, "pkg/core/a.go:2:") || strings.Contains(grepResult.Output, ".git") || strings.Contains(grepResult.Output, ".next") || strings.Contains(grepResult.Output, ".env.local") {
 		t.Fatalf("unexpected grep result: %+v", grepResult)
+	}
+}
+
+func TestGlobStarOnlyListsImmediateEntries(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "README.md"), "hello\n")
+	mustWrite(t, filepath.Join(root, "src", "main.go"), "package main\n")
+
+	result := execute(t, &GlobTool{}, &tool.ExecutionContext{CWD: root}, map[string]any{"pattern": "*"})
+	if result.IsError {
+		t.Fatalf("glob failed: %+v", result)
+	}
+	if !strings.Contains(result.Output, "README.md") {
+		t.Fatalf("root file missing: %q", result.Output)
+	}
+	if !strings.Contains(result.Output, "src/") {
+		t.Fatalf("root directory missing: %q", result.Output)
+	}
+	if strings.Contains(result.Output, "src/main.go") {
+		t.Fatalf("star pattern unexpectedly recursed: %q", result.Output)
 	}
 }
 

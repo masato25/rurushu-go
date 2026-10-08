@@ -21,6 +21,9 @@ const (
 
 var ignoredDirs = map[string]bool{
 	".git": true, "node_modules": true, "vendor": true, "dist": true, "build": true,
+	".next": true, "_next": true, ".turbo": true, ".cache": true, "coverage": true, "out": true,
+	".claude": true, ".mimocode": true, ".openzerocode": true,
+	".venv": true, "venv": true, ".tox": true, ".pytest_cache": true,
 }
 
 type globArgs struct {
@@ -81,9 +84,6 @@ func (*GlobTool) Execute(ctx context.Context, raw json.RawMessage, execCtx *tool
 		}
 		return toolError("Glob error", "%v", err), nil
 	}
-	if !strings.Contains(pattern, "/") {
-		pattern = "**/" + pattern
-	}
 	if _, err := doublestar.Match(pattern, "probe"); err != nil {
 		return toolError("Glob error", "invalid pattern: %v", err), nil
 	}
@@ -96,25 +96,58 @@ func (*GlobTool) Execute(ctx context.Context, raw json.RawMessage, execCtx *tool
 
 	var matches []string
 	hasMore := false
-	err = doublestar.GlobWalk(os.DirFS(base), pattern, func(path string, d fs.DirEntry) error {
+	err = filepath.WalkDir(base, func(fullPath string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil
+		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
 		}
-		if d.IsDir() {
-			if ignoredDirs[d.Name()] {
-				return fs.SkipDir
-			}
+		if fullPath == base {
 			return nil
 		}
-		for _, part := range strings.Split(filepath.ToSlash(path), "/") {
-			if ignoredDirs[part] {
+
+		rel, relErr := filepath.Rel(base, fullPath)
+		if relErr != nil {
+			return nil
+		}
+		rel = filepath.ToSlash(rel)
+		if d.IsDir() {
+			if ignoredDirectory(d.Name()) {
+				return fs.SkipDir
+			}
+			matched, matchErr := doublestar.Match(pattern, rel)
+			if matchErr != nil {
+				return matchErr
+			}
+			if !matched {
+				return nil
+			}
+			if len(matches) >= limit {
+				hasMore = true
+				return fs.SkipAll
+			}
+			matches = append(matches, rel+"/")
+			return nil
+		}
+		for _, part := range strings.Split(rel, "/") {
+			if ignoredDirectory(part) {
 				return nil
 			}
 		}
-		full := filepath.Join(base, filepath.FromSlash(path))
-		real, evalErr := filepath.EvalSymlinks(full)
+		if ignoredDiscoveryFile(d.Name()) {
+			return nil
+		}
+		matched, matchErr := doublestar.Match(pattern, rel)
+		if matchErr != nil {
+			return matchErr
+		}
+		if !matched {
+			return nil
+		}
+		real, evalErr := filepath.EvalSymlinks(fullPath)
 		if evalErr != nil || !isWithin(rootReal, real) {
 			return nil
 		}

@@ -90,3 +90,21 @@ func patternEscapesRoot(pattern string) bool {
 	}
 	return false
 }
+
+func ignoredDirectory(name string) bool {
+	if ignoredDirs[name] {
+		return true
+	}
+	return strings.HasPrefix(name, ".next-")
+}
+
+func ignoredDiscoveryFile(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == ".env" || name == ".env.local" {
+		return true
+	}
+	if strings.HasPrefix(name, ".env.") && name != ".env.example" {
+		return true
+	}
+	return false
+}

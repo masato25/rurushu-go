@@ -169,9 +169,12 @@ func (*GrepTool) Execute(ctx context.Context, raw json.RawMessage, execCtx *tool
 			default:
 			}
 			if d.IsDir() {
-				if path != target && ignoredDirs[d.Name()] {
+				if path != target && ignoredDirectory(d.Name()) {
 					return fs.SkipDir
 				}
+				return nil
+			}
+			if ignoredDiscoveryFile(d.Name()) {
 				return nil
 			}
 			real, evalErr := filepath.EvalSymlinks(path)
