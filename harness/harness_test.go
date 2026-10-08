@@ -121,10 +121,22 @@ func TestValidator(t *testing.T) {
 	}
 }
 
-type loopingProvider struct{}
+type loopingProvider struct {
+	mu    sync.Mutex
+	calls []provider.CompletionRequest
+}
 
-func (loopingProvider) Stream(context.Context, provider.CompletionRequest) (<-chan provider.StreamEvent, error) {
-	out := make(chan provider.StreamEvent, 2)
+func (p *loopingProvider) Stream(_ context.Context, req provider.CompletionRequest) (<-chan provider.StreamEvent, error) {
+	p.mu.Lock()
+	p.calls = append(p.calls, req)
+	p.mu.Unlock()
+	out := make(chan provider.StreamEvent, 3)
+	if len(req.Tools) == 0 {
+		out <- provider.StreamEvent{Type: provider.EventToken, Text: "final answer from gathered evidence"}
+		out <- provider.StreamEvent{Type: provider.EventDone}
+		close(out)
+		return out, nil
+	}
 	out <- provider.StreamEvent{Type: provider.EventToolCall, ToolCalls: []provider.ToolCall{{
 		ID: "loop", Type: "function", Function: provider.FunctionCall{Name: "echo", Arguments: `{"value":"again"}`},
 	}}}
@@ -133,16 +145,86 @@ func (loopingProvider) Stream(context.Context, provider.CompletionRequest) (<-ch
 	return out, nil
 }
 
-func TestRunStopsAtToolStepLimit(t *testing.T) {
+func TestRunFinalizesWithoutToolsAtStepLimit(t *testing.T) {
 	registry := tool.NewRegistry()
 	registry.Register(echoTool{})
-	client, err := New(loopingProvider{}, Config{Tools: registry, Permission: permission.AllowAll{}, ToolMaxSteps: 2})
+	prov := &loopingProvider{}
+	client, err := New(prov, Config{Tools: registry, Permission: permission.AllowAll{}, ToolMaxSteps: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := client.Run(context.Background(), provider.CompletionRequest{Model: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Text != "final answer from gathered evidence" || result.ToolCalls != 2 {
+		t.Fatalf("result = %#v", result)
+	}
+	prov.mu.Lock()
+	defer prov.mu.Unlock()
+	if len(prov.calls) != 3 {
+		t.Fatalf("provider calls = %d, want 3", len(prov.calls))
+	}
+	final := prov.calls[2]
+	if len(final.Tools) != 0 {
+		t.Fatalf("final synthesis still exposed tools: %#v", final.Tools)
+	}
+	if len(final.Messages) == 0 || final.Messages[0].Role != provider.RoleSystem || !strings.Contains(final.Messages[0].Content, "Tool-use budget") {
+		t.Fatalf("missing final synthesis instruction: %#v", final.Messages)
+	}
+}
+
+type noFinalAnswerProvider struct{}
+
+func (noFinalAnswerProvider) Stream(_ context.Context, req provider.CompletionRequest) (<-chan provider.StreamEvent, error) {
+	out := make(chan provider.StreamEvent, 2)
+	if len(req.Tools) > 0 {
+		out <- provider.StreamEvent{Type: provider.EventToolCall, ToolCalls: []provider.ToolCall{{
+			ID: "loop", Type: "function", Function: provider.FunctionCall{Name: "echo", Arguments: `{"value":"again"}`},
+		}}}
+	}
+	out <- provider.StreamEvent{Type: provider.EventDone}
+	close(out)
+	return out, nil
+}
+
+func TestRunStillReturnsMaxStepsWhenFinalSynthesisIsEmpty(t *testing.T) {
+	registry := tool.NewRegistry()
+	registry.Register(echoTool{})
+	client, err := New(noFinalAnswerProvider{}, Config{Tools: registry, Permission: permission.AllowAll{}, ToolMaxSteps: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, err = client.Run(context.Background(), provider.CompletionRequest{Model: "test"})
-	if err == nil || !errors.Is(err, ErrMaxSteps) || !strings.Contains(err.Error(), "maximum step limit (2)") {
+	if err == nil || !errors.Is(err, ErrMaxSteps) || !strings.Contains(err.Error(), "maximum step limit (1)") {
 		t.Fatalf("max-step error = %v", err)
+	}
+}
+
+func TestRepeatedIdenticalToolCallGetsStopHint(t *testing.T) {
+	registry := tool.NewRegistry()
+	registry.Register(echoTool{})
+	client, err := New(&loopingProvider{}, Config{Tools: registry, Permission: permission.AllowAll{}, ToolMaxSteps: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := client.Stream(context.Background(), provider.CompletionRequest{Model: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolResults := 0
+	foundHint := false
+	for event := range stream {
+		if event.Type != provider.EventToolResult || event.ToolExecution == nil {
+			continue
+		}
+		toolResults++
+		if strings.Contains(event.ToolExecution.Output, "identical tool call has been repeated") {
+			foundHint = true
+		}
+	}
+	if toolResults != 3 || !foundHint {
+		t.Fatalf("tool results=%d found hint=%v", toolResults, foundHint)
 	}
 }
 
