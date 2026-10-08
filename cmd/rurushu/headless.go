@@ -23,22 +23,24 @@ import (
 	"github.com/arborlogic/rurushu-go/tool/builtin"
 )
 
-const headlessProtocolVersion = 1
+const headlessProtocolVersion = 2
+const headlessMinimumProtocolVersion = 1
 const maxHeadlessRequestBytes = 2 << 20
 
 type headlessRequest struct {
-	Version          int      `json:"version"`
-	ExecutionID      string   `json:"execution_id,omitempty"`
-	Task             string   `json:"task"`
-	CWD              string   `json:"cwd,omitempty"`
-	Model            string   `json:"model,omitempty"`
-	SystemPrompt     string   `json:"system_prompt,omitempty"`
-	PromptFiles      []string `json:"prompt_files,omitempty"`
-	MaxSteps         int      `json:"max_steps,omitempty"`
-	MaxContextTokens int      `json:"max_context_tokens,omitempty"`
-	CompactAt        float64  `json:"compact_at,omitempty"`
-	ToolProfile      string   `json:"tool_profile,omitempty"`
-	PermissionMode   string   `json:"permission_mode,omitempty"`
+	Version          int                 `json:"version"`
+	ExecutionID      string              `json:"execution_id,omitempty"`
+	Task             string              `json:"task"`
+	CWD              string              `json:"cwd,omitempty"`
+	Model            string              `json:"model,omitempty"`
+	SystemPrompt     string              `json:"system_prompt,omitempty"`
+	PromptFiles      []string            `json:"prompt_files,omitempty"`
+	MaxSteps         int                 `json:"max_steps,omitempty"`
+	MaxContextTokens int                 `json:"max_context_tokens,omitempty"`
+	CompactAt        float64             `json:"compact_at,omitempty"`
+	ToolProfile      string              `json:"tool_profile,omitempty"`
+	PermissionMode   string              `json:"permission_mode,omitempty"`
+	ExternalTools    []tool.ExternalSpec `json:"external_tools,omitempty"`
 }
 
 type headlessUsage struct {
@@ -137,18 +139,27 @@ func decodeHeadlessRequest(in io.Reader) (headlessRequest, error) {
 func executeHeadless(ctx context.Context, req headlessRequest) (headlessResponse, error) {
 	fail := func(err error) (headlessResponse, error) {
 		resp := headlessFailure(err)
+		if req.Version >= headlessMinimumProtocolVersion && req.Version <= headlessProtocolVersion {
+			resp.Version = req.Version
+		}
 		resp.ExecutionID = req.ExecutionID
 		return resp, err
 	}
 	failInvalid := func(err error) (headlessResponse, error) {
 		resp := headlessFailure(err)
+		if req.Version >= headlessMinimumProtocolVersion && req.Version <= headlessProtocolVersion {
+			resp.Version = req.Version
+		}
 		resp.ExecutionID = req.ExecutionID
 		resp.ErrorCode = "invalid_request"
 		resp.RetryAfter = 0
 		return resp, err
 	}
-	if req.Version != headlessProtocolVersion {
+	if req.Version < headlessMinimumProtocolVersion || req.Version > headlessProtocolVersion {
 		return failInvalid(fmt.Errorf("unsupported request version %d", req.Version))
+	}
+	if req.Version == 1 && len(req.ExternalTools) > 0 {
+		return failInvalid(fmt.Errorf("external_tools requires request version 2"))
 	}
 	if strings.TrimSpace(req.Task) == "" {
 		return failInvalid(fmt.Errorf("task is required"))
@@ -235,6 +246,16 @@ func executeHeadless(ctx context.Context, req headlessRequest) (headlessResponse
 		}
 		builtin.RegisterExecution(registry, manager)
 	}
+	for _, spec := range req.ExternalTools {
+		if _, exists := registry.Get(strings.TrimSpace(spec.ID)); exists {
+			return failInvalid(fmt.Errorf("external tool %q conflicts with an existing tool", spec.ID))
+		}
+		externalTool, toolErr := tool.NewExternal(spec)
+		if toolErr != nil {
+			return failInvalid(toolErr)
+		}
+		registry.Register(externalTool)
+	}
 
 	var perm permission.Handler = permission.DenyAll{}
 	switch permissionMode {
@@ -265,7 +286,7 @@ func executeHeadless(ctx context.Context, req headlessRequest) (headlessResponse
 		return fail(err)
 	}
 	return headlessResponse{
-		Version:     headlessProtocolVersion,
+		Version:     req.Version,
 		ExecutionID: req.ExecutionID,
 		Status:      "completed",
 		Text:        result.Text,

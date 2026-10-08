@@ -11,11 +11,21 @@ import (
 
 	"github.com/arborlogic/rurushu-go/harness"
 	"github.com/arborlogic/rurushu-go/provider"
+	"github.com/arborlogic/rurushu-go/tool"
 )
 
 func TestExecuteHeadlessRejectsUnsupportedVersion(t *testing.T) {
-	resp, err := executeHeadless(context.Background(), headlessRequest{Version: 2, Task: "test"})
+	resp, err := executeHeadless(context.Background(), headlessRequest{Version: 3, Task: "test"})
 	if err == nil || resp.Status != "error" || resp.ErrorCode != "invalid_request" || !strings.Contains(resp.Error, "unsupported request version") {
+		t.Fatalf("resp=%+v err=%v", resp, err)
+	}
+}
+
+func TestExecuteHeadlessRejectsExternalToolsInV1(t *testing.T) {
+	resp, err := executeHeadless(context.Background(), headlessRequest{
+		Version: 1, Task: "test", ExternalTools: []tool.ExternalSpec{{ID: "x", Description: "x", Command: "x", ReadOnly: true}},
+	})
+	if err == nil || resp.ErrorCode != "invalid_request" || !strings.Contains(resp.Error, "requires request version 2") {
 		t.Fatalf("resp=%+v err=%v", resp, err)
 	}
 }
@@ -75,7 +85,7 @@ func TestRunHeadlessCLIWritesJSONErrorForMalformedRequest(t *testing.T) {
 		t.Fatal(readErr)
 	}
 	var resp headlessResponse
-	if json.Unmarshal(data, &resp) != nil || resp.Version != 1 || resp.Status != "error" || !strings.Contains(resp.Error, "decode headless request") {
+	if json.Unmarshal(data, &resp) != nil || resp.Version != headlessProtocolVersion || resp.Status != "error" || !strings.Contains(resp.Error, "decode headless request") {
 		t.Fatalf("response=%s", data)
 	}
 }
