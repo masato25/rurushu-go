@@ -13,6 +13,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/arborlogic/rurushu-go/jobs"
 	"github.com/arborlogic/rurushu-go/permission"
+	"github.com/arborlogic/rurushu-go/projectstate"
 	"github.com/arborlogic/rurushu-go/provider"
 )
 
@@ -61,6 +62,9 @@ type Model struct {
 	slashMatchIndex     int
 	jobManager          *jobs.Manager
 	runningJobs         int
+	sessionStore        *projectstate.Store
+	sessionID           string
+	sessionSaveError    string
 }
 
 type streamStartedMsg struct {
@@ -672,10 +676,11 @@ func (m *Model) applyStreamEvent(event provider.StreamEvent) bool {
 		if event.ToolExecution != nil {
 			m.finishToolActivity(event.ToolExecution)
 			m.history = append(m.history, provider.Message{
-				Role:       provider.RoleTool,
-				ToolCallID: event.ToolExecution.ID,
-				Name:       event.ToolExecution.Tool,
-				Content:    event.ToolExecution.Output,
+				Role:        provider.RoleTool,
+				ToolCallID:  event.ToolExecution.ID,
+				Name:        event.ToolExecution.Tool,
+				Content:     event.ToolExecution.Output,
+				ToolIsError: event.ToolExecution.IsError,
 			})
 		}
 	case provider.EventUsage:
@@ -693,6 +698,7 @@ func (m *Model) applyStreamEvent(event provider.StreamEvent) bool {
 		return true
 	case provider.EventDone:
 		m.commitAssistantHistory()
+		m.persistSessionWithWarning()
 		m.finishStream()
 		return true
 	}

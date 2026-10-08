@@ -31,6 +31,7 @@ type Message struct {
 	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID       string     `json:"tool_call_id,omitempty"`
 	Name             string     `json:"name,omitempty"`
+	ToolIsError      bool       `json:"tool_is_error,omitempty"`
 }
 
 type TokenUsage struct {

@@ -257,6 +257,7 @@ func (m *Model) runSlashCommand(input string) (bool, tea.Cmd) {
 		m.streamReasoningText = ""
 		m.toolActivity = ""
 		m.thinkingVisible = false
+		m.persistSessionWithWarning()
 	}
 	if result.Quit {
 		return true, tea.Quit

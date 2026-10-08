@@ -68,6 +68,7 @@ func run(args []string) error {
 	compactAt := fs.Float64("compact-at", saved.CompactAt, "context compaction threshold percent")
 	activity := fs.String("activity", firstNonEmpty(os.Getenv("RURUSHU_ACTIVITY"), "normal"), "activity display: normal, verbose, or debug")
 	listModels := fs.Bool("list-models", false, "list models and exit")
+	resumeSession := fs.String("resume", "", "resume project session by id or 'last'")
 	var promptFiles stringList
 	fs.Var(&promptFiles, "prompt-file", "append a prompt file; repeatable")
 
@@ -124,8 +125,20 @@ func run(args []string) error {
 	if _, err := jobManager.List(); err != nil {
 		return fmt.Errorf("reconcile managed jobs: %w", err)
 	}
-	if _, err := projectStore.StartSession(model, prov.ID()); err != nil {
-		return fmt.Errorf("start project session: %w", err)
+	var session projectstate.Session
+	resumeID := strings.TrimSpace(*resumeSession)
+	if resumeID == "" {
+		session, err = projectStore.StartSession(model, prov.ID())
+	} else if resumeID == "last" {
+		session, err = projectStore.LastSession()
+		if err == nil {
+			session, err = projectStore.ActivateSession(session.ID)
+		}
+	} else {
+		session, err = projectStore.ActivateSession(resumeID)
+	}
+	if err != nil {
+		return fmt.Errorf("initialize project session: %w", err)
 	}
 
 	permissionUI := permission.NewTUIHandler()
@@ -150,6 +163,7 @@ func run(args []string) error {
 	uiModel.SetActivityMode(activityMode)
 	uiModel.SetPermissionRequests(permissionUI.Requests())
 	uiModel.SetJobManager(jobManager)
+	uiModel.SetProjectSession(projectStore, session)
 	if len(fs.Args()) > 0 {
 		uiModel.SetInitialInput(strings.Join(fs.Args(), " "))
 	}

@@ -113,7 +113,7 @@ func (c *Client) streamWithTools(ctx context.Context, initial provider.Completio
 				if !emitEvent(ctx, out, result) {
 					return
 				}
-				messages = append(messages, provider.Message{Role: provider.RoleTool, ToolCallID: call.ID, Name: call.Function.Name, Content: output})
+				messages = append(messages, provider.Message{Role: provider.RoleTool, ToolCallID: call.ID, Name: call.Function.Name, Content: output, ToolIsError: isError})
 			}
 			if forceFinalize {
 				c.finalizeWithoutTools(ctx, initial, messages, out)
