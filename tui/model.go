@@ -54,6 +54,8 @@ type Model struct {
 	activityMode        ActivityMode
 	thinkingVisible     bool
 	slashCommands       map[string]SlashCommand
+	slashMatches        []SlashCommand
+	slashMatchIndex     int
 }
 
 type streamStartedMsg struct {
@@ -133,6 +135,7 @@ func (m *Model) SetInitialMessage(content string) {
 func (m *Model) SetInitialInput(content string) {
 	if value := strings.TrimSpace(content); value != "" {
 		m.composer.SetValue(value)
+		m.updateSlashAutocomplete()
 		m.layout()
 	}
 }
@@ -239,6 +242,30 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
+		if !m.streaming && len(m.slashMatches) > 0 {
+			switch msg.String() {
+			case "up":
+				m.slashMatchIndex = (m.slashMatchIndex - 1 + len(m.slashMatches)) % len(m.slashMatches)
+				m.refreshConversation()
+				return m, nil
+			case "down":
+				m.slashMatchIndex = (m.slashMatchIndex + 1) % len(m.slashMatches)
+				m.refreshConversation()
+				return m, nil
+			case "tab":
+				m.completeSlashAutocomplete()
+				m.layout()
+				m.viewport.GotoBottom()
+				return m, nil
+			case "enter":
+				if !m.currentSlashCommandIsExact() {
+					m.completeSlashAutocomplete()
+					m.layout()
+					m.viewport.GotoBottom()
+					return m, nil
+				}
+			}
+		}
 		switch msg.String() {
 		case "ctrl+c":
 			return m, tea.Quit
@@ -268,6 +295,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.composer.Reset()
+			m.updateSlashAutocomplete()
 			if m.runSlashCommand(value) {
 				m.refreshConversation()
 				m.layout()
@@ -304,13 +332,21 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	beforeHeight := m.composer.Height()
+	beforeValue := m.composer.Value()
 	var composerCmd tea.Cmd
 	m.composer, composerCmd = m.composer.Update(msg)
 	if composerCmd != nil {
 		cmds = append(cmds, composerCmd)
 	}
+	valueChanged := beforeValue != m.composer.Value()
+	if valueChanged {
+		m.updateSlashAutocomplete()
+	}
 	if beforeHeight != m.composer.Height() {
 		m.layout()
+	} else if valueChanged {
+		m.refreshConversation()
+		m.viewport.GotoBottom()
 	}
 
 	beforeOffset := m.viewport.YOffset()
@@ -485,6 +521,12 @@ func (m *Model) refreshConversation() {
 				b.WriteString(renderTranscript("·", content, inner, agentMarkerStyle))
 			}
 		}
+	}
+	if suggestions := m.renderSlashAutocomplete(inner); suggestions != "" {
+		if b.Len() > 0 {
+			b.WriteString("\n\n")
+		}
+		b.WriteString(suggestions)
 	}
 	m.viewport.SetContent(b.String())
 }

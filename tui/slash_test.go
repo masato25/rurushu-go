@@ -44,7 +44,7 @@ func TestDefaultSlashHelpIsLocal(t *testing.T) {
 		t.Fatalf("messages=%d, want 2", len(m.messages))
 	}
 	output := m.messages[1].Content
-	for _, want := range []string{"/clear", "/help", "//text"} {
+	for _, want := range []string{"/clear", "/help", "Autocomplete:", "//text"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("help output missing %q: %q", want, output)
 		}
@@ -137,5 +137,95 @@ func TestRegisterSlashCommandValidation(t *testing.T) {
 		if err := m.RegisterSlashCommand(command); err == nil {
 			t.Fatalf("RegisterSlashCommand(%q) succeeded unexpectedly", command.Name)
 		}
+	}
+}
+
+func TestSlashAutocompleteFiltersAndCompletesWithEnter(t *testing.T) {
+	m := New("test-model", "test-provider")
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.composer.SetValue("/he")
+	m.updateSlashAutocomplete()
+	m.refreshConversation()
+
+	if len(m.slashMatches) != 1 || m.slashMatches[0].Name != "help" {
+		t.Fatalf("matches = %#v", m.slashMatches)
+	}
+	if view := m.viewport.View(); !strings.Contains(view, "/help") {
+		t.Fatalf("autocomplete not rendered: %q", view)
+	}
+
+	_, cmd := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	if cmd != nil {
+		t.Fatal("partial slash autocomplete unexpectedly started async work")
+	}
+	if got := m.composer.Value(); got != "/help" {
+		t.Fatalf("completed value = %q", got)
+	}
+	if len(m.messages) != 0 {
+		t.Fatalf("partial autocomplete executed command: %#v", m.messages)
+	}
+
+	_, cmd = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	if cmd != nil {
+		t.Fatal("exact /help unexpectedly started async work")
+	}
+	if len(m.messages) != 2 || !strings.Contains(m.messages[1].Content, "local commands") {
+		t.Fatalf("exact /help did not execute: %#v", m.messages)
+	}
+}
+
+func TestSlashAutocompleteNavigationAndTab(t *testing.T) {
+	m := New("test-model", "test-provider")
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.composer.SetValue("/")
+	m.updateSlashAutocomplete()
+	if len(m.slashMatches) < 2 || m.slashMatches[0].Name != "clear" || m.slashMatches[1].Name != "help" {
+		t.Fatalf("unexpected sorted matches: %#v", m.slashMatches)
+	}
+
+	m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+	if m.slashMatchIndex != 1 {
+		t.Fatalf("selected index = %d", m.slashMatchIndex)
+	}
+	m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab}))
+	if got := m.composer.Value(); got != "/help" {
+		t.Fatalf("tab completion = %q", got)
+	}
+}
+
+func TestCustomSlashCommandParticipatesInAutocomplete(t *testing.T) {
+	m := New("test-model", "test-provider")
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	err := m.RegisterSlashCommand(SlashCommand{
+		Name:        "project",
+		Usage:       "/project <name>",
+		Description: "select project",
+		Run: func(string) (SlashCommandResult, error) {
+			return SlashCommandResult{}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.composer.SetValue("/pro")
+	m.updateSlashAutocomplete()
+	if len(m.slashMatches) != 1 || m.slashMatches[0].Name != "project" {
+		t.Fatalf("custom command matches = %#v", m.slashMatches)
+	}
+	m.completeSlashAutocomplete()
+	if got := m.composer.Value(); got != "/project " {
+		t.Fatalf("custom completion = %q", got)
+	}
+	if len(m.slashMatches) != 0 {
+		t.Fatalf("autocomplete should close once arguments begin: %#v", m.slashMatches)
+	}
+}
+
+func TestDoubleSlashDoesNotAutocomplete(t *testing.T) {
+	m := New("test-model", "test-provider")
+	m.composer.SetValue("//he")
+	m.updateSlashAutocomplete()
+	if len(m.slashMatches) != 0 {
+		t.Fatalf("double slash unexpectedly autocompleted: %#v", m.slashMatches)
 	}
 }

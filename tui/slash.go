@@ -42,6 +42,7 @@ func (m *Model) RegisterSlashCommand(command SlashCommand) error {
 		m.slashCommands = make(map[string]SlashCommand)
 	}
 	m.slashCommands[name] = command
+	m.updateSlashAutocomplete()
 	return nil
 }
 
@@ -81,7 +82,7 @@ func (m *Model) slashHelp() string {
 			b.WriteString(command.Description)
 		}
 	}
-	b.WriteString("\n\nUse //text to send /text to the model instead of treating it as a local command.")
+	b.WriteString("\n\nAutocomplete: ↑/↓ select, Tab or Enter complete. Use //text to send /text to the model instead.")
 	return b.String()
 }
 
@@ -143,4 +144,98 @@ func (m *Model) runSlashCommand(input string) bool {
 		m.messages = append(m.messages, Message{Role: roleAssistant, Content: output, Local: true})
 	}
 	return true
+}
+
+func (m *Model) updateSlashAutocomplete() {
+	query, ok := slashAutocompleteQuery(m.composer.Value())
+	if !ok {
+		m.slashMatches = nil
+		m.slashMatchIndex = 0
+		return
+	}
+
+	matches := make([]SlashCommand, 0, len(m.slashCommands))
+	for _, command := range m.slashCommands {
+		if strings.HasPrefix(command.Name, query) {
+			matches = append(matches, command)
+		}
+	}
+	sort.Slice(matches, func(i, j int) bool { return matches[i].Name < matches[j].Name })
+	m.slashMatches = matches
+	if len(matches) == 0 {
+		m.slashMatchIndex = 0
+		return
+	}
+	if m.slashMatchIndex >= len(matches) {
+		m.slashMatchIndex = len(matches) - 1
+	}
+}
+
+func slashAutocompleteQuery(input string) (string, bool) {
+	input = strings.TrimLeft(input, " \t")
+	if !strings.HasPrefix(input, "/") || strings.HasPrefix(input, "//") {
+		return "", false
+	}
+	body := strings.TrimPrefix(input, "/")
+	if strings.ContainsAny(body, " \t\r\n") {
+		return "", false
+	}
+	return normalizeSlashName(body), true
+}
+
+func (m *Model) currentSlashCommandIsExact() bool {
+	query, ok := slashAutocompleteQuery(m.composer.Value())
+	if !ok || query == "" {
+		return false
+	}
+	_, exists := m.slashCommands[query]
+	return exists
+}
+
+func (m *Model) completeSlashAutocomplete() {
+	if len(m.slashMatches) == 0 {
+		return
+	}
+	index := min(max(0, m.slashMatchIndex), len(m.slashMatches)-1)
+	command := m.slashMatches[index]
+	value := "/" + command.Name
+	if len(strings.Fields(command.Usage)) > 1 {
+		value += " "
+	}
+	m.composer.SetValue(value)
+	m.composer.CursorEnd()
+	m.updateSlashAutocomplete()
+}
+
+func (m *Model) renderSlashAutocomplete(width int) string {
+	if len(m.slashMatches) == 0 || width <= 0 {
+		return ""
+	}
+	const maxVisible = 5
+	limit := min(maxVisible, len(m.slashMatches))
+	start := 0
+	if m.slashMatchIndex >= limit {
+		start = m.slashMatchIndex - limit + 1
+	}
+	end := min(len(m.slashMatches), start+limit)
+
+	var b strings.Builder
+	for i := start; i < end; i++ {
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		command := m.slashMatches[i]
+		line := command.Usage
+		if command.Description != "" {
+			line += " — " + command.Description
+		}
+		marker := "  "
+		style := mutedStyle
+		if i == m.slashMatchIndex {
+			marker = "› "
+			style = statusNameStyle
+		}
+		b.WriteString(style.Render(truncate(marker+line, width)))
+	}
+	return b.String()
 }
