@@ -296,11 +296,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.composer.Reset()
 			m.updateSlashAutocomplete()
-			if m.runSlashCommand(value) {
+			if handled, command := m.runSlashCommand(value); handled {
 				m.refreshConversation()
 				m.layout()
 				m.viewport.GotoBottom()
-				return m, nil
+				return m, command
 			}
 			value = unescapeSlashPrompt(value)
 			m.messages = append(m.messages, Message{Role: roleUser, Content: value})

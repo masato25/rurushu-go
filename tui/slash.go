@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	tea "charm.land/bubbletea/v2"
 )
 
 // SlashCommand is a lightweight local command handled by the TUI before any
@@ -18,6 +20,7 @@ type SlashCommand struct {
 type SlashCommandResult struct {
 	Output       string
 	ClearSession bool
+	Quit         bool
 }
 
 func normalizeSlashName(name string) string {
@@ -61,6 +64,17 @@ func (m *Model) registerDefaultSlashCommands() {
 		Description: "clear the transcript and model conversation history",
 		Run: func(string) (SlashCommandResult, error) {
 			return SlashCommandResult{ClearSession: true}, nil
+		},
+	})
+	_ = m.RegisterSlashCommand(SlashCommand{
+		Name:        "exit",
+		Usage:       "/exit",
+		Description: "exit the TUI",
+		Run: func(args string) (SlashCommandResult, error) {
+			if strings.TrimSpace(args) != "" {
+				return SlashCommandResult{}, fmt.Errorf("/exit does not accept arguments")
+			}
+			return SlashCommandResult{Quit: true}, nil
 		},
 	})
 }
@@ -109,10 +123,10 @@ func unescapeSlashPrompt(input string) string {
 	return input
 }
 
-func (m *Model) runSlashCommand(input string) bool {
+func (m *Model) runSlashCommand(input string) (bool, tea.Cmd) {
 	name, args, ok := parseSlashCommand(input)
 	if !ok {
-		return false
+		return false, nil
 	}
 
 	command, exists := m.slashCommands[name]
@@ -121,10 +135,17 @@ func (m *Model) runSlashCommand(input string) bool {
 			Message{Role: roleUser, Content: input, Local: true},
 			Message{Role: roleAssistant, Content: fmt.Sprintf("unknown local command /%s\n\nUse /help to list available commands.", name), Local: true},
 		)
-		return true
+		return true, nil
 	}
 
 	result, err := command.Run(args)
+	if err != nil {
+		m.messages = append(m.messages,
+			Message{Role: roleUser, Content: input, Local: true},
+			Message{Role: roleAssistant, Content: "error: " + err.Error(), Local: true},
+		)
+		return true, nil
+	}
 	if result.ClearSession {
 		m.messages = nil
 		m.history = nil
@@ -132,18 +153,20 @@ func (m *Model) runSlashCommand(input string) bool {
 		m.streamReasoningText = ""
 		m.toolActivity = ""
 		m.thinkingVisible = false
-		return true
+	}
+	if result.Quit {
+		return true, tea.Quit
+	}
+	if result.ClearSession {
+		return true, nil
 	}
 
 	m.messages = append(m.messages, Message{Role: roleUser, Content: input, Local: true})
 	output := strings.TrimSpace(result.Output)
-	if err != nil {
-		output = "error: " + err.Error()
-	}
 	if output != "" {
 		m.messages = append(m.messages, Message{Role: roleAssistant, Content: output, Local: true})
 	}
-	return true
+	return true, nil
 }
 
 func (m *Model) updateSlashAutocomplete() {

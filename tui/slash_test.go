@@ -44,7 +44,7 @@ func TestDefaultSlashHelpIsLocal(t *testing.T) {
 		t.Fatalf("messages=%d, want 2", len(m.messages))
 	}
 	output := m.messages[1].Content
-	for _, want := range []string{"/clear", "/help", "Autocomplete:", "//text"} {
+	for _, want := range []string{"/clear", "/exit", "/help", "Autocomplete:", "//text"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("help output missing %q: %q", want, output)
 		}
@@ -179,17 +179,48 @@ func TestSlashAutocompleteNavigationAndTab(t *testing.T) {
 	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m.composer.SetValue("/")
 	m.updateSlashAutocomplete()
-	if len(m.slashMatches) < 2 || m.slashMatches[0].Name != "clear" || m.slashMatches[1].Name != "help" {
+	if len(m.slashMatches) < 3 || m.slashMatches[0].Name != "clear" || m.slashMatches[1].Name != "exit" || m.slashMatches[2].Name != "help" {
 		t.Fatalf("unexpected sorted matches: %#v", m.slashMatches)
 	}
 
 	m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
-	if m.slashMatchIndex != 1 {
+	m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+	if m.slashMatchIndex != 2 {
 		t.Fatalf("selected index = %d", m.slashMatchIndex)
 	}
 	m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab}))
 	if got := m.composer.Value(); got != "/help" {
 		t.Fatalf("tab completion = %q", got)
+	}
+}
+
+func TestExitSlashCommandQuitsLocally(t *testing.T) {
+	streamer := &slashTestStreamer{}
+	m := NewWithStreamer("test-model", "test-provider", streamer)
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	cmd := submitSlashTest(t, m, "/exit")
+	if cmd == nil {
+		t.Fatal("/exit did not return quit command")
+	}
+	msg := cmd()
+	if _, ok := msg.(tea.QuitMsg); !ok {
+		t.Fatalf("/exit command returned %T, want tea.QuitMsg", msg)
+	}
+	if len(streamer.req.Messages) != 0 {
+		t.Fatalf("/exit reached model: %#v", streamer.req.Messages)
+	}
+}
+
+func TestExitSlashCommandRejectsArguments(t *testing.T) {
+	m := New("test-model", "test-provider")
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	if cmd := submitSlashTest(t, m, "/exit now"); cmd != nil {
+		t.Fatal("/exit with arguments unexpectedly quit")
+	}
+	if len(m.messages) != 2 || !strings.Contains(m.messages[1].Content, "/exit does not accept arguments") {
+		t.Fatalf("unexpected /exit argument error: %#v", m.messages)
 	}
 }
 

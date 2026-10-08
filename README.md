@@ -59,6 +59,7 @@ Local slash commands are handled by the TUI before a prompt reaches the model. T
 ```text
 /help   show available local commands
 /clear  clear the transcript and model conversation history
+/exit   exit the TUI
 ```
 
 Unknown slash commands stay local and show an error. Prefix a prompt with `//` when you really want to send leading-slash text to the model; for example, `//help` sends `/help` as a normal prompt.
