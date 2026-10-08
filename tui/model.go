@@ -61,6 +61,7 @@ type Model struct {
 	slashMatches        []SlashCommand
 	slashMatchIndex     int
 	selectionPicker     *selectionPicker
+	pendingAttachments  []imageAttachment
 	jobManager          *jobs.Manager
 	runningJobs         int
 	sessionStore        *projectstate.Store
@@ -327,22 +328,25 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			value := strings.TrimSpace(m.composer.Value())
-			if value == "" {
+			if value == "" && len(m.pendingAttachments) == 0 {
 				return m, nil
 			}
 			m.composer.Reset()
 			m.updateSlashAutocomplete()
-			if handled, command := m.runSlashCommand(value); handled {
-				m.refreshConversation()
-				m.layout()
-				m.viewport.GotoBottom()
-				return m, command
+			if value != "" {
+				if handled, command := m.runSlashCommand(value); handled {
+					m.refreshConversation()
+					m.layout()
+					m.viewport.GotoBottom()
+					return m, command
+				}
 			}
 			value = unescapeSlashPrompt(value)
-			m.messages = append(m.messages, Message{Role: roleUser, Content: value})
+			images, attachments := m.takePendingImages()
+			m.messages = append(m.messages, Message{Role: roleUser, Content: formatUserMessageWithImages(value, attachments)})
 
 			if m.llm != nil {
-				m.history = append(m.history, provider.Message{Role: provider.RoleUser, Content: value})
+				m.history = append(m.history, provider.Message{Role: provider.RoleUser, Content: value, Images: images})
 				m.streamAssistantText = ""
 				m.streamReasoningText = ""
 				m.thinkingVisible = false
@@ -572,6 +576,12 @@ func (m *Model) refreshConversation() {
 		}
 		b.WriteString(suggestions)
 	}
+	if len(m.pendingAttachments) > 0 {
+		if b.Len() > 0 {
+			b.WriteString("\n\n")
+		}
+		b.WriteString(mutedStyle.Render(truncate(formatPendingAttachmentHint(m.pendingAttachments), inner)))
+	}
 	m.viewport.SetContent(b.String())
 }
 
@@ -592,6 +602,13 @@ func (m *Model) statusView() string {
 	}
 	if m.runningJobs > 0 {
 		state += "  " + jobCountLabel(m.runningJobs)
+	}
+	if len(m.pendingAttachments) > 0 {
+		if len(m.pendingAttachments) == 1 {
+			state += "  1 image"
+		} else {
+			state += fmt.Sprintf("  %d images", len(m.pendingAttachments))
+		}
 	}
 	details := truncate(model+state, max(1, width-7))
 	return statusNameStyle.Render("rurushu") + mutedStyle.Render("  "+details)
@@ -616,7 +633,7 @@ func jobCountLabel(count int) string {
 func (m *Model) completionRequest() provider.CompletionRequest {
 	return provider.CompletionRequest{
 		Model:    m.modelName,
-		Messages: append([]provider.Message(nil), m.history...),
+		Messages: boundVisionHistory(m.history, maxRequestHistoryImages),
 	}
 }
 

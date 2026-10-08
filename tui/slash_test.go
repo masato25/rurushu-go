@@ -185,13 +185,20 @@ func TestSlashAutocompleteNavigationAndTab(t *testing.T) {
 	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m.composer.SetValue("/")
 	m.updateSlashAutocomplete()
-	if len(m.slashMatches) < 3 || m.slashMatches[0].Name != "clear" || m.slashMatches[1].Name != "exit" || m.slashMatches[2].Name != "help" {
-		t.Fatalf("unexpected sorted matches: %#v", m.slashMatches)
+	helpIndex := -1
+	for i, match := range m.slashMatches {
+		if match.Name == "help" {
+			helpIndex = i
+			break
+		}
 	}
-
-	m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
-	m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
-	if m.slashMatchIndex != 2 {
+	if helpIndex < 0 {
+		t.Fatalf("help command missing from matches: %#v", m.slashMatches)
+	}
+	for i := 0; i < helpIndex; i++ {
+		m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+	}
+	if m.slashMatchIndex != helpIndex {
 		t.Fatalf("selected index = %d", m.slashMatchIndex)
 	}
 	m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab}))

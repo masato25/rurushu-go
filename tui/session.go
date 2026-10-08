@@ -159,6 +159,7 @@ func (m *Model) resumeSession(id string) (string, error) {
 func (m *Model) restoreSession(session projectstate.Session) {
 	m.sessionID = session.ID
 	m.sessionSaveError = ""
+	m.pendingAttachments = nil
 	m.restoreHistory(session.Messages)
 	m.composer.Reset()
 	m.updateSlashAutocomplete()
@@ -183,8 +184,8 @@ func transcriptFromHistory(history []provider.Message) []Message {
 	for _, message := range history {
 		switch message.Role {
 		case provider.RoleUser:
-			if strings.TrimSpace(message.Content) != "" {
-				result = append(result, Message{Role: roleUser, Content: message.Content})
+			if strings.TrimSpace(message.Content) != "" || len(message.Images) > 0 {
+				result = append(result, Message{Role: roleUser, Content: formatPersistedUserMessage(message.Content, len(message.Images))})
 			}
 		case provider.RoleAssistant:
 			if strings.TrimSpace(message.Content) != "" {
@@ -239,6 +240,7 @@ func (m *Model) rewindAsk(askNumber int, asks []int) (string, error) {
 	}
 	index := asks[askNumber-1]
 	original := m.history[index].Content
+	originalImages := append([]string(nil), m.history[index].Images...)
 	prefix := cloneProviderMessages(m.history[:index])
 	parent := m.sessionID
 
@@ -250,6 +252,10 @@ func (m *Model) rewindAsk(askNumber int, asks []int) (string, error) {
 		m.sessionID = fork.ID
 	}
 	m.restoreHistory(prefix)
+	m.pendingAttachments = nil
+	for i, dataURL := range originalImages {
+		m.pendingAttachments = append(m.pendingAttachments, attachmentFromDataURL(dataURL, i))
+	}
 	m.composer.SetValue(original)
 	m.composer.CursorEnd()
 	m.updateSlashAutocomplete()

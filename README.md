@@ -58,7 +58,7 @@ separate processes and do not need to share Go packages:
 
 ```bash
 printf '%s\n' '{
-  "version": 1,
+  "version": 2,
   "task": "inspect this workspace and summarize the requested change",
   "cwd": "/path/to/workspace",
   "model": "model-name",
@@ -75,6 +75,16 @@ text such as `rurushu run tests` remains a TUI initial prompt for compatibility.
 explicit `permission_mode: "allow"`. Provider credentials and endpoint remain
 Rurushu configuration concerns (`RURUSHU_*`, `OPENAI_*`, or its saved config).
 
+Protocol v2 also accepts an optional `external_tools` array. Each entry supplies a
+function `id`, description, JSON `input_schema`, subprocess `command`/`args`, optional
+environment, a `read_only` flag, and optional `preauthorized`. Rurushu forwards the
+model's JSON arguments to the subprocess on stdin and returns bounded stdout/stderr as
+the tool result. Read-only tools skip interactive permission. Mutable tools normally
+pass through the configured permission handler; `preauthorized` is for orchestrators
+whose subprocess enforces its own narrower policy (for example workspace confinement
+or a command allowlist). Version 1 requests remain accepted but cannot include
+`external_tools`.
+
 TUI controls: `Enter` sends, `Shift+Enter` inserts a newline, `Esc` cancels the active model request, `PgUp/PgDn` scroll, and `Ctrl+C` exits. Permission prompts are approved with `y` and denied with `n`, `Enter`, or `Esc`.
 
 Local slash commands are handled by the TUI before a prompt reaches the model. The standalone client currently includes:
@@ -83,6 +93,9 @@ Local slash commands are handled by the TUI before a prompt reaches the model. T
 /help   show available local commands
 /clear  clear the transcript and model conversation history
 /exit   exit the TUI
+/attach <image-path>  attach an image to the next model message
+/attachments  show images queued for the next model message
+/detach [index|all]  remove a queued image attachment
 /jobs [id]  list managed jobs or inspect one job's recent output
 /stop <id>  stop a Rurushu-managed background job
 ```
@@ -90,6 +103,8 @@ Local slash commands are handled by the TUI before a prompt reaches the model. T
 Unknown slash commands stay local and show an error. Prefix a prompt with `//` when you really want to send leading-slash text to the model; for example, `//help` sends `/help` as a normal prompt.
 
 Slash commands autocomplete as you type. Enter `/` or a prefix such as `/he`, use `↑/↓` to choose a match, then press `Tab` or `Enter` to complete it. Press `Enter` again when the command is complete to run it. Commands registered by embedding applications automatically appear in the same autocomplete list.
+
+Vision-capable OpenAI-compatible models can receive local images through `/attach`. Up to four images may be queued for the next message. Rurushu keeps small JPEG/PNG files unchanged, but automatically downsizes images whose longest edge exceeds 1568 pixels and re-encodes oversized payloads to stay near 768 KiB per image. This bounds transfer/session growth and reduces image-token usage on providers whose vision cost scales with image dimensions. GIF/WebP input is normalized to a broadly compatible static JPEG/PNG payload. To avoid paying for the same vision inputs on every later turn, API requests carry at most the four most recent historical images; the full optimized image history remains in the local session for resume/rewind.
 
 Tool activity is persistent in the transcript. `--activity normal` shows compact tool progress (default), `--activity verbose` adds compact args/result details, and `--activity debug` includes full tool results plus usage/context-compaction events. Raw model chain-of-thought is never rendered; reasoning streams only produce a generic `thinking` progress marker.
 

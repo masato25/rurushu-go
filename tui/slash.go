@@ -54,6 +54,7 @@ func (m *Model) RegisterSlashCommand(command SlashCommand) error {
 }
 
 func (m *Model) registerDefaultSlashCommands() {
+	m.registerAttachmentSlashCommands()
 	_ = m.RegisterSlashCommand(SlashCommand{
 		Name:        "help",
 		Usage:       "/help",
@@ -280,6 +281,7 @@ func (m *Model) runSlashCommand(input string) (bool, tea.Cmd) {
 	if result.ClearSession {
 		m.messages = nil
 		m.history = nil
+		m.pendingAttachments = nil
 		m.streamAssistantText = ""
 		m.streamReasoningText = ""
 		m.toolActivity = ""

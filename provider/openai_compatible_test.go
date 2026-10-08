@@ -2,12 +2,48 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 )
+
+func TestOpenAICompatibleProviderSendsMultimodalContent(t *testing.T) {
+	const imageURL = "data:image/png;base64,AA=="
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	prov := NewOpenAICompatibleProvider(server.URL, "")
+	events, err := prov.Stream(context.Background(), CompletionRequest{Model: "vision-model", Messages: []Message{{Role: RoleUser, Content: "inspect", Images: []string{imageURL}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range events {
+	}
+	messages, ok := body["messages"].([]any)
+	if !ok || len(messages) != 1 {
+		t.Fatalf("messages=%#v", body["messages"])
+	}
+	message := messages[0].(map[string]any)
+	parts, ok := message["content"].([]any)
+	if !ok || len(parts) != 2 {
+		t.Fatalf("content=%#v", message["content"])
+	}
+	imagePart := parts[1].(map[string]any)
+	imageValue := imagePart["image_url"].(map[string]any)
+	if imagePart["type"] != "image_url" || imageValue["url"] != imageURL {
+		t.Fatalf("image part=%#v", imagePart)
+	}
+}
 
 func TestOpenAICompatibleProviderStreaming(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
