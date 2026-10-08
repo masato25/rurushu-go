@@ -49,7 +49,7 @@ func processIdentity(pid int) (string, error) {
 	return identity, nil
 }
 
-func stopProcessGroup(pid int, _ time.Duration) error {
+func stopProcessGroup(pid int, _ string, _ time.Duration) error {
 	if pid <= 0 {
 		return fmt.Errorf("invalid pid")
 	}

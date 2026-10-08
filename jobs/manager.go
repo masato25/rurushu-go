@@ -113,7 +113,15 @@ func (m *Manager) Start(command string) (Job, error) {
 		return Job{}, fmt.Errorf("start managed job: %w", err)
 	}
 	job.RunnerPID = cmd.Process.Pid
-	_ = cmd.Process.Release()
+	// Reap the runner while this process is alive. The runner is in its own
+	// process group, so waiting for it does not tie its lifetime to the TUI:
+	// if the TUI exits first, the OS reparents the still-running runner.
+	// Without a waiter, a stopped runner can remain as a zombie until the TUI
+	// exits, causing kill(pid, 0) to report it as alive and a later SIGKILL of
+	// its now-empty process group to fail with EPERM on macOS.
+	go func() {
+		_ = cmd.Wait()
+	}()
 	for attempt := 0; attempt < 25; attempt++ {
 		current, readErr := m.readLocked(id)
 		if readErr == nil && current.RunnerPID > 0 {
@@ -188,7 +196,7 @@ func (m *Manager) Stop(id int) (Job, error) {
 		_ = m.writeLocked(job)
 		return job, fmt.Errorf("job #%d runner is no longer the recorded process", id)
 	}
-	if err := stopProcessGroup(job.RunnerPID, 2*time.Second); err != nil {
+	if err := stopProcessGroup(job.RunnerPID, job.RunnerIdentity, 2*time.Second); err != nil {
 		return job, fmt.Errorf("stop job #%d: %w", id, err)
 	}
 	job.Status = StatusStopped

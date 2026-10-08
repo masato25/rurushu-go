@@ -39,24 +39,34 @@ func processIdentity(pid int) (string, error) {
 	return identity, nil
 }
 
-func stopProcessGroup(pid int, grace time.Duration) error {
+func stopProcessGroup(pid int, expectedIdentity string, grace time.Duration) error {
 	if pid <= 0 {
 		return fmt.Errorf("invalid pid")
+	}
+	stillRecordedProcess := func() bool {
+		identity, err := processIdentity(pid)
+		return err == nil && identity == expectedIdentity
 	}
 	target := pid
 	if pgid, err := syscall.Getpgid(pid); err == nil && pgid > 0 && pgid != syscall.Getpgrp() {
 		target = -pgid
 	}
 	if err := syscall.Kill(target, syscall.SIGTERM); err != nil && err != syscall.ESRCH {
-		return err
+		if !stillRecordedProcess() {
+			return nil
+		}
+		return fmt.Errorf("send SIGTERM: %w", err)
 	}
 	deadline := time.Now().Add(grace)
-	for processAlive(pid) && time.Now().Before(deadline) {
+	for stillRecordedProcess() && time.Now().Before(deadline) {
 		time.Sleep(50 * time.Millisecond)
 	}
-	if processAlive(pid) {
+	if stillRecordedProcess() {
 		if err := syscall.Kill(target, syscall.SIGKILL); err != nil && err != syscall.ESRCH {
-			return err
+			if !stillRecordedProcess() {
+				return nil
+			}
+			return fmt.Errorf("send SIGKILL: %w", err)
 		}
 	}
 	return nil
