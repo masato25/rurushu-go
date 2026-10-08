@@ -60,6 +60,7 @@ type Model struct {
 	slashCommands       map[string]SlashCommand
 	slashMatches        []SlashCommand
 	slashMatchIndex     int
+	selectionPicker     *selectionPicker
 	jobManager          *jobs.Manager
 	runningJobs         int
 	sessionStore        *projectstate.Store
@@ -274,6 +275,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
+		if handled, command := m.handleSelectionPickerKey(msg); handled {
+			return m, command
+		}
 		if !m.streaming && len(m.slashMatches) > 0 {
 			switch msg.String() {
 			case "up":
@@ -428,7 +432,7 @@ func (m *Model) View() tea.View {
 	v.KeyboardEnhancements.ReportAllKeysAsEscapeCodes = true
 	v.KeyboardEnhancements.ReportAssociatedText = true
 
-	if m.pendingPermission == nil {
+	if m.pendingPermission == nil && m.selectionPicker == nil {
 		if cursor := m.composer.Cursor(); cursor != nil {
 			cursor.X += m.frame.Composer.X
 			cursor.Y += m.frame.Composer.Y
@@ -439,6 +443,9 @@ func (m *Model) View() tea.View {
 }
 
 func (m *Model) inputView() string {
+	if m.selectionPicker != nil {
+		return pickerHelp(max(1, m.frame.Composer.Width))
+	}
 	if m.pendingPermission == nil {
 		return m.composer.View()
 	}
@@ -554,7 +561,12 @@ func (m *Model) refreshConversation() {
 			}
 		}
 	}
-	if suggestions := m.renderSlashAutocomplete(inner); suggestions != "" {
+	if picker := m.renderSelectionPicker(inner); picker != "" {
+		if b.Len() > 0 {
+			b.WriteString("\n\n")
+		}
+		b.WriteString(picker)
+	} else if suggestions := m.renderSlashAutocomplete(inner); suggestions != "" {
 		if b.Len() > 0 {
 			b.WriteString("\n\n")
 		}

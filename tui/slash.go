@@ -24,6 +24,7 @@ type SlashCommandResult struct {
 	Output       string
 	ClearSession bool
 	Quit         bool
+	picker       *selectionPicker
 }
 
 func normalizeSlashName(name string) string {
@@ -97,7 +98,29 @@ func (m *Model) registerJobSlashCommands() {
 				if err != nil {
 					return SlashCommandResult{}, err
 				}
-				return SlashCommandResult{Output: formatManagedJobs(all)}, nil
+				if len(all) == 0 {
+					return SlashCommandResult{Output: "No managed jobs."}, nil
+				}
+				items := make([]selectionPickerItem, 0, len(all))
+				for _, listed := range all {
+					jobID := listed.ID
+					items = append(items, selectionPickerItem{
+						Label:   fmt.Sprintf("#%d  %s  %s", listed.ID, listed.Status, listed.Command),
+						Command: fmt.Sprintf("/jobs %d", jobID),
+						Run: func() (string, error) {
+							job, err := m.jobManager.Get(jobID)
+							if err != nil {
+								return "", err
+							}
+							output, err := m.jobManager.Tail(jobID, 32*1024)
+							if err != nil {
+								return "", err
+							}
+							return formatManagedJobDetail(job, output), nil
+						},
+					})
+				}
+				return SlashCommandResult{picker: &selectionPicker{Title: "managed jobs", Items: items}}, nil
 			}
 			id, err := strconv.Atoi(args)
 			if err != nil || id <= 0 {
@@ -248,6 +271,10 @@ func (m *Model) runSlashCommand(input string) (bool, tea.Cmd) {
 			Message{Role: roleUser, Content: input, Local: true},
 			Message{Role: roleAssistant, Content: "error: " + err.Error(), Local: true},
 		)
+		return true, nil
+	}
+	if result.picker != nil {
+		m.openSelectionPicker(result.picker)
 		return true, nil
 	}
 	if result.ClearSession {

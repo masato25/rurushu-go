@@ -171,3 +171,125 @@ func TestSessionSlashCommandsAppearInHelp(t *testing.T) {
 		}
 	}
 }
+
+func TestResumePickerSupportsArrowSelectionAndEnter(t *testing.T) {
+	store, err := projectstate.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.StartSession("test-model", "openai-compatible")
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstHistory := []provider.Message{
+		{Role: provider.RoleUser, Content: "first session ask"},
+		{Role: provider.RoleAssistant, Content: "first session answer"},
+	}
+	first, err = store.SaveSession(first.ID, "test-model", "openai-compatible", firstHistory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.StartSession("test-model", "openai-compatible")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondHistory := []provider.Message{
+		{Role: provider.RoleUser, Content: "second session ask"},
+		{Role: provider.RoleAssistant, Content: "second session answer"},
+	}
+	second, err = store.SaveSession(second.ID, "test-model", "openai-compatible", secondHistory)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m := New("test-model", "openai-compatible")
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 28})
+	m.SetProjectSession(store, second)
+	if cmd := submitSlashTest(t, m, "/resume"); cmd != nil {
+		t.Fatal("/resume picker unexpectedly returned async command")
+	}
+	if m.selectionPicker == nil || len(m.selectionPicker.Items) != 2 {
+		t.Fatalf("resume picker=%#v", m.selectionPicker)
+	}
+	if !strings.Contains(m.selectionPicker.Items[0].Label, second.ID) {
+		t.Fatalf("newest/current session was not first: %#v", m.selectionPicker.Items)
+	}
+	m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+	m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	if m.selectionPicker != nil {
+		t.Fatal("resume picker stayed open after Enter")
+	}
+	if m.SessionID() != first.ID || !reflect.DeepEqual(m.history, firstHistory) {
+		t.Fatalf("selected session not restored: id=%q history=%#v", m.SessionID(), m.history)
+	}
+	if len(m.messages) < 2 || m.messages[len(m.messages)-2].Content != "/resume "+first.ID {
+		t.Fatalf("selected resume action missing from transcript: %#v", m.messages)
+	}
+}
+
+func TestRewindPickerSupportsArrowSelectionAndEnter(t *testing.T) {
+	store, err := projectstate.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := store.StartSession("test-model", "openai-compatible")
+	if err != nil {
+		t.Fatal(err)
+	}
+	history := []provider.Message{
+		{Role: provider.RoleUser, Content: "first ask"},
+		{Role: provider.RoleAssistant, Content: "first answer"},
+		{Role: provider.RoleUser, Content: "second ask to revise"},
+		{Role: provider.RoleAssistant, Content: "second answer"},
+		{Role: provider.RoleUser, Content: "third ask"},
+		{Role: provider.RoleAssistant, Content: "third answer"},
+	}
+	session, err = store.SaveSession(session.ID, "test-model", "openai-compatible", history)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m := New("test-model", "openai-compatible")
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 28})
+	m.SetProjectSession(store, session)
+	if cmd := submitSlashTest(t, m, "/rewind"); cmd != nil {
+		t.Fatal("/rewind picker unexpectedly returned async command")
+	}
+	if m.selectionPicker == nil || len(m.selectionPicker.Items) != 3 {
+		t.Fatalf("rewind picker=%#v", m.selectionPicker)
+	}
+	m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+	m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	if m.selectionPicker != nil {
+		t.Fatal("rewind picker stayed open after Enter")
+	}
+	if got := m.composer.Value(); got != "second ask to revise" {
+		t.Fatalf("rewind selected wrong ask: %q", got)
+	}
+	if len(m.history) != 2 || m.history[0].Content != "first ask" || m.history[1].Content != "first answer" {
+		t.Fatalf("rewound history=%#v", m.history)
+	}
+	if m.SessionID() == session.ID {
+		t.Fatal("rewind picker did not fork session")
+	}
+}
+
+func TestSelectionPickerEscClosesWithoutAction(t *testing.T) {
+	m := New("test-model", "openai-compatible")
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	run := false
+	m.openSelectionPicker(&selectionPicker{Title: "test", Items: []selectionPickerItem{{
+		Label: "item",
+		Run: func() (string, error) {
+			run = true
+			return "", nil
+		},
+	}}})
+	if m.selectionPicker == nil || m.composer.Focused() {
+		t.Fatal("picker did not take input focus")
+	}
+	m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
+	if m.selectionPicker != nil || !m.composer.Focused() || run {
+		t.Fatalf("Esc did not close picker cleanly: picker=%#v focused=%v run=%v", m.selectionPicker, m.composer.Focused(), run)
+	}
+}

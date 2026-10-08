@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -273,16 +274,17 @@ func TestJobSlashCommandsUseProjectManager(t *testing.T) {
 	if err := os.MkdirAll(jobsDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	job := jobs.Job{
-		ID: 1, Command: "npm run dev", CWD: root, Status: jobs.StatusExited,
-		StartedAt: time.Now().Add(-time.Minute), LogPath: "jobs/job_000001.log",
-	}
-	data, err := json.Marshal(job)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(jobsDir, "job_000001.json"), data, 0o600); err != nil {
-		t.Fatal(err)
+	for _, job := range []jobs.Job{
+		{ID: 1, Command: "npm run dev", CWD: root, Status: jobs.StatusExited, StartedAt: time.Now().Add(-time.Minute), LogPath: "jobs/job_000001.log"},
+		{ID: 2, Command: "python3 -m http.server", CWD: root, Status: jobs.StatusStopped, StartedAt: time.Now().Add(-30 * time.Second), LogPath: "jobs/job_000002.log"},
+	} {
+		data, err := json.Marshal(job)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(jobsDir, fmt.Sprintf("job_%06d.json", job.ID)), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	manager, err := jobs.Open(root, stateDir, os.Args[0])
 	if err != nil {
@@ -300,7 +302,21 @@ func TestJobSlashCommandsUseProjectManager(t *testing.T) {
 	if cmd := submitSlashTest(t, m, "/jobs"); cmd != nil {
 		t.Fatal("/jobs unexpectedly started async work")
 	}
-	if len(m.messages) != 2 || !strings.Contains(m.messages[1].Content, "#1") || !strings.Contains(m.messages[1].Content, "npm run dev") {
-		t.Fatalf("unexpected /jobs output: %#v", m.messages)
+	if m.selectionPicker == nil || len(m.selectionPicker.Items) != 2 || m.selectionPicker.Index != 0 {
+		t.Fatalf("/jobs picker=%#v", m.selectionPicker)
+	}
+	if len(m.messages) != 0 {
+		t.Fatalf("opening /jobs picker polluted transcript: %#v", m.messages)
+	}
+	m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+	if m.selectionPicker == nil || m.selectionPicker.Index != 1 {
+		t.Fatalf("down did not select second job: %#v", m.selectionPicker)
+	}
+	m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	if m.selectionPicker != nil {
+		t.Fatal("job picker stayed open after Enter")
+	}
+	if len(m.messages) != 2 || m.messages[0].Content != "/jobs 2" || !strings.Contains(m.messages[1].Content, "#2 python3 -m http.server") {
+		t.Fatalf("unexpected selected job output: %#v", m.messages)
 	}
 }

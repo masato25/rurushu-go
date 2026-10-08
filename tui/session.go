@@ -50,27 +50,28 @@ func (m *Model) registerSessionSlashCommands() {
 				if err != nil {
 					return SlashCommandResult{}, err
 				}
-				return SlashCommandResult{Output: formatSessions(sessions, m.sessionID) + "\n\nUse /resume <session-id> to switch sessions."}, nil
-			}
-			var (
-				session projectstate.Session
-				err     error
-			)
-			if id == "last" {
-				session, err = m.sessionStore.LastSession()
-			} else {
-				session, err = m.sessionStore.ActivateSession(id)
-			}
-			if err != nil {
-				return SlashCommandResult{}, err
-			}
-			if id == "last" {
-				if _, err := m.sessionStore.ActivateSession(session.ID); err != nil {
-					return SlashCommandResult{}, err
+				if len(sessions) == 0 {
+					return SlashCommandResult{Output: "No saved sessions."}, nil
 				}
+				items := make([]selectionPickerItem, 0, len(sessions))
+				for _, listed := range sessions {
+					sessionID := listed.ID
+					marker := " "
+					if sessionID == m.sessionID {
+						marker = "*"
+					}
+					items = append(items, selectionPickerItem{
+						Label:   fmt.Sprintf("%s %s  %d asks  %s", marker, sessionID, countUserAsks(listed.Messages), formatSessionTime(listed.UpdatedAt)),
+						Command: "/resume " + sessionID,
+						Run: func() (string, error) {
+							return m.resumeSession(sessionID)
+						},
+					})
+				}
+				return SlashCommandResult{picker: &selectionPicker{Title: "resume session", Items: items}}, nil
 			}
-			m.restoreSession(session)
-			return SlashCommandResult{Output: fmt.Sprintf("resumed %s · %d asks", session.ID, countUserAsks(session.Messages))}, nil
+			output, err := m.resumeSession(id)
+			return SlashCommandResult{Output: output}, err
 		},
 	})
 	_ = m.RegisterSlashCommand(SlashCommand{
@@ -97,7 +98,22 @@ func (m *Model) registerSessionSlashCommands() {
 			asks := userAskPositions(m.history)
 			value := strings.TrimSpace(args)
 			if value == "" {
-				return SlashCommandResult{Output: formatRewindAsks(m.history, asks)}, nil
+				if len(asks) == 0 {
+					return SlashCommandResult{Output: "No asks to rewind."}, nil
+				}
+				items := make([]selectionPickerItem, 0, len(asks))
+				for number, index := range asks {
+					askNumber := number + 1
+					preview := strings.Join(strings.Fields(m.history[index].Content), " ")
+					items = append(items, selectionPickerItem{
+						Label:   fmt.Sprintf("#%d  %s", askNumber, truncatePlain(preview, 88)),
+						Command: fmt.Sprintf("/rewind %d", askNumber),
+						Run: func() (string, error) {
+							return m.rewindAsk(askNumber, userAskPositions(m.history))
+						},
+					})
+				}
+				return SlashCommandResult{picker: &selectionPicker{Title: "rewind ask", Items: items}}, nil
 			}
 			askNumber := 0
 			if value == "last" {
@@ -116,6 +132,28 @@ func (m *Model) registerSessionSlashCommands() {
 			return SlashCommandResult{Output: output}, nil
 		},
 	})
+}
+
+func (m *Model) resumeSession(id string) (string, error) {
+	var (
+		session projectstate.Session
+		err     error
+	)
+	if id == "last" {
+		session, err = m.sessionStore.LastSession()
+	} else {
+		session, err = m.sessionStore.ActivateSession(id)
+	}
+	if err != nil {
+		return "", err
+	}
+	if id == "last" {
+		if _, err := m.sessionStore.ActivateSession(session.ID); err != nil {
+			return "", err
+		}
+	}
+	m.restoreSession(session)
+	return fmt.Sprintf("resumed %s · %d asks", session.ID, countUserAsks(session.Messages)), nil
 }
 
 func (m *Model) restoreSession(session projectstate.Session) {
