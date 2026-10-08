@@ -1,4 +1,19 @@
-# rurushu-go
+<p align="center">
+  <img src="./assets/rurushu-go-cover.webp" alt="RURUSHU GO" width="100%" />
+</p>
+
+<h1 align="center">RURUSHU GO</h1>
+
+<p align="center">
+  <strong>A lightweight terminal coding agent and reusable LLM harness, built in Go.</strong>
+</p>
+
+<p align="center">
+  <img alt="Go 1.26" src="https://img.shields.io/badge/Go-1.26-7B5CFF?style=flat-square&logo=go&logoColor=white" />
+  <img alt="OpenAI compatible" src="https://img.shields.io/badge/API-OpenAI--compatible-7B5CFF?style=flat-square" />
+  <img alt="Bubble Tea TUI" src="https://img.shields.io/badge/TUI-Bubble%20Tea-7B5CFF?style=flat-square" />
+  <img alt="Vision capable" src="https://img.shields.io/badge/VLM-Vision%20capable-7B5CFF?style=flat-square" />
+</p>
 
 `rurushu-go` is a lightweight LLM harness and terminal client for Go. The reusable runtime stays independent of GEASS domain logic; the repository also ships an optional Bubble Tea TUI and an OpenAI-compatible HTTP adapter so it can run by itself.
 
