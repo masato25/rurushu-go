@@ -12,6 +12,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	rurushuconfig "github.com/arborlogic/rurushu-go/config"
 	"github.com/arborlogic/rurushu-go/harness"
 	"github.com/arborlogic/rurushu-go/permission"
 	"github.com/arborlogic/rurushu-go/provider"
@@ -38,18 +39,26 @@ func main() {
 }
 
 func run(args []string) error {
+	if len(args) > 0 && args[0] == "setup" {
+		return runSetup(args[1:])
+	}
+
+	saved, err := rurushuconfig.Load()
+	if err != nil {
+		return err
+	}
 	fs := flag.NewFlagSet("rurushu", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 
-	baseURL := fs.String("base-url", firstNonEmpty(os.Getenv("RURUSHU_BASE_URL"), os.Getenv("OPENAI_BASE_URL"), "https://api.openai.com/v1"), "OpenAI-compatible API base URL")
-	apiKey := fs.String("api-key", firstNonEmpty(os.Getenv("RURUSHU_API_KEY"), os.Getenv("OPENAI_API_KEY")), "API key (prefer env vars)")
-	modelName := fs.String("model", firstNonEmpty(os.Getenv("RURUSHU_MODEL"), os.Getenv("OPENAI_MODEL")), "model name")
+	baseURL := fs.String("base-url", firstNonEmpty(os.Getenv("RURUSHU_BASE_URL"), os.Getenv("OPENAI_BASE_URL"), saved.BaseURL, "https://api.openai.com/v1"), "OpenAI-compatible API base URL")
+	apiKey := fs.String("api-key", firstNonEmpty(os.Getenv("RURUSHU_API_KEY"), os.Getenv("OPENAI_API_KEY"), saved.APIKey), "API key (prefer env vars)")
+	modelName := fs.String("model", firstNonEmpty(os.Getenv("RURUSHU_MODEL"), os.Getenv("OPENAI_MODEL"), saved.Model), "model name")
 	cwdDefault, _ := os.Getwd()
 	cwd := fs.String("cwd", cwdDefault, "working directory exposed to the harness")
-	systemPrompt := fs.String("system-prompt", "You are Rurushu, a concise terminal assistant. Use only capabilities actually provided by the host application.", "system prompt")
-	maxSteps := fs.Int("max-steps", 8, "maximum model/tool turns per request")
-	maxContext := fs.Int("max-context-tokens", 24576, "approximate context budget before compaction")
-	compactAt := fs.Float64("compact-at", 80, "context compaction threshold percent")
+	systemPrompt := fs.String("system-prompt", firstNonEmpty(saved.SystemPrompt, rurushuconfig.DefaultSystemPrompt), "system prompt")
+	maxSteps := fs.Int("max-steps", saved.MaxSteps, "maximum model/tool turns per request")
+	maxContext := fs.Int("max-context-tokens", saved.MaxContextTokens, "approximate context budget before compaction")
+	compactAt := fs.Float64("compact-at", saved.CompactAt, "context compaction threshold percent")
 	listModels := fs.Bool("list-models", false, "list models and exit")
 	var promptFiles stringList
 	fs.Var(&promptFiles, "prompt-file", "append a prompt file; repeatable")
@@ -113,6 +122,27 @@ func run(args []string) error {
 		uiModel.SetInitialInput(strings.Join(fs.Args(), " "))
 	}
 	_, err = tea.NewProgram(uiModel).Run()
+	return err
+}
+
+func runSetup(args []string) error {
+	fs := flag.NewFlagSet("rurushu setup", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return err
+	}
+	if len(fs.Args()) != 0 {
+		return fmt.Errorf("setup does not accept positional arguments")
+	}
+	cfg, err := rurushuconfig.Load()
+	if err != nil {
+		return err
+	}
+	model := tui.NewSetupModel(cfg)
+	_, err = tea.NewProgram(model).Run()
 	return err
 }
 

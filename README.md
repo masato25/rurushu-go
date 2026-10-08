@@ -4,6 +4,20 @@
 
 ## Run it standalone
 
+The recommended first run is the interactive setup wizard:
+
+```bash
+go run ./cmd/rurushu setup
+```
+
+It stores the OpenAI-compatible base URL, API key, model, system prompt, and harness budgets in `~/.config/rurushu/config.json` with file mode `0600`. After that, start Rurushu with:
+
+```bash
+go run ./cmd/rurushu
+```
+
+CLI flags override environment variables, which override the saved config.
+
 With OpenAI:
 
 ```bash

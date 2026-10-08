@@ -15,6 +15,7 @@ func TestFirstNonEmpty(t *testing.T) {
 }
 
 func TestRunRequiresModel(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("RURUSHU_MODEL", "")
 	t.Setenv("OPENAI_MODEL", "")
 	err := run([]string{"--cwd", t.TempDir()})
@@ -24,6 +25,7 @@ func TestRunRequiresModel(t *testing.T) {
 }
 
 func TestRunListModelsWithoutModel(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/models" {
 			t.Errorf("path = %q", r.URL.Path)
