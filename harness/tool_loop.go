@@ -87,6 +87,7 @@ func (c *Client) streamWithTools(ctx context.Context, initial provider.Completio
 				return
 			}
 			messages = append(messages, provider.Message{Role: provider.RoleAssistant, Content: text.String(), ReasoningContent: reasoning.String(), ToolCalls: toolCalls})
+			forceFinalize := false
 			for _, call := range toolCalls {
 				if ctx.Err() != nil {
 					return
@@ -106,12 +107,17 @@ func (c *Client) streamWithTools(ctx context.Context, initial provider.Completio
 				output, isError := c.executeTool(ctx, call)
 				if repeatedCallCount >= 3 {
 					output += "\n\n[Harness note: this identical tool call has been repeated multiple times. Use the result already gathered and move toward answering the user.]"
+					forceFinalize = true
 				}
 				result := provider.StreamEvent{Type: provider.EventToolResult, ToolExecution: &provider.ToolExecutionInfo{ID: call.ID, Tool: call.Function.Name, Args: call.Function.Arguments, Output: output, IsError: isError}}
 				if !emitEvent(ctx, out, result) {
 					return
 				}
 				messages = append(messages, provider.Message{Role: provider.RoleTool, ToolCallID: call.ID, Name: call.Function.Name, Content: output})
+			}
+			if forceFinalize {
+				c.finalizeWithoutTools(ctx, initial, messages, out)
+				return
 			}
 		}
 		c.finalizeWithoutTools(ctx, initial, messages, out)

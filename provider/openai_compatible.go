@@ -313,6 +313,7 @@ func (p *OpenAICompatibleProvider) Stream(ctx context.Context, req CompletionReq
 				Type        string `json:"type"`
 				Event       string `json:"event"`
 				Delta       string `json:"delta"`
+				Arguments   string `json:"arguments"`
 				CallID      string `json:"call_id"`
 				OutputIndex int    `json:"output_index"`
 				Item        *struct {
@@ -395,8 +396,9 @@ func (p *OpenAICompatibleProvider) Stream(ctx context.Context, req CompletionReq
 					accumulator.AddChunk(chunk.OutputIndex, id, chunk.Item.Name, "")
 				}
 			case "response.function_call_arguments.delta":
-
 				accumulator.AddChunk(chunk.OutputIndex, chunk.CallID, "", chunk.Delta)
+			case "response.function_call_arguments.done":
+				accumulator.SetFinal(chunk.OutputIndex, chunk.CallID, "", chunk.Arguments)
 			case "response.output_item.done":
 				if chunk.Item != nil && chunk.Item.Type == "function_call" {
 					id := chunk.Item.CallID
@@ -422,9 +424,13 @@ func (p *OpenAICompatibleProvider) Stream(ctx context.Context, req CompletionReq
 					text := chunk.Response.OutputText
 					if text == "" && len(chunk.Response.Output) > 0 {
 						var tb strings.Builder
-						for _, item := range chunk.Response.Output {
+						for outputIndex, item := range chunk.Response.Output {
 							if item.Type == "function_call" {
-
+								id := item.CallID
+								if id == "" {
+									id = item.ID
+								}
+								accumulator.SetFinal(outputIndex, id, item.Name, item.Arguments)
 							} else if item.Type == "message" {
 								for _, c := range item.Content {
 									tb.WriteString(c.Text)

@@ -127,6 +127,64 @@ func TestZeroAPIResponsesStyleDoneCarriesFinalToolArguments(t *testing.T) {
 	}
 }
 
+func TestResponsesStyleFunctionArgumentsDoneCarriesFinalArguments(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, "event: response.output_item.added\n")
+		fmt.Fprint(w, `data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"read","arguments":""}}`+"\n\n")
+		fmt.Fprint(w, "event: response.function_call_arguments.delta\n")
+		fmt.Fprint(w, `data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"path\":\"README"}`+"\n\n")
+		fmt.Fprint(w, "event: response.function_call_arguments.done\n")
+		fmt.Fprint(w, `data: {"type":"response.function_call_arguments.done","output_index":0,"arguments":"{\"path\":\"README.md\"}"}`+"\n\n")
+		fmt.Fprint(w, "event: response.completed\n")
+		fmt.Fprint(w, `data: {"type":"response.completed","response":{"output":[]}}`+"\n\n")
+	}))
+	defer server.Close()
+
+	prov := NewOpenAICompatibleProvider(server.URL, "")
+	events, err := prov.Stream(context.Background(), CompletionRequest{Model: "test-model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var calls []ToolCall
+	for ev := range events {
+		if ev.Type == EventToolCall {
+			calls = ev.ToolCalls
+		}
+	}
+	if len(calls) != 1 || calls[0].ID != "call_1" || calls[0].Function.Name != "read" || calls[0].Function.Arguments != `{"path":"README.md"}` {
+		t.Fatalf("function_call_arguments.done not reconstructed: %+v", calls)
+	}
+}
+
+func TestResponsesStyleCompletedOutputIsAuthoritativeForToolArguments(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, "event: response.output_item.added\n")
+		fmt.Fprint(w, `data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_9","call_id":"call_9","name":"grep","arguments":""}}`+"\n\n")
+		fmt.Fprint(w, "event: response.completed\n")
+		fmt.Fprint(w, `data: {"type":"response.completed","response":{"output":[{"type":"function_call","id":"fc_9","call_id":"call_9","name":"grep","arguments":"{\"pattern\":\"TODO\",\"path\":\".\"}"}]}}`+"\n\n")
+	}))
+	defer server.Close()
+
+	prov := NewOpenAICompatibleProvider(server.URL, "")
+	events, err := prov.Stream(context.Background(), CompletionRequest{Model: "test-model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var calls []ToolCall
+	for ev := range events {
+		if ev.Type == EventToolCall {
+			calls = ev.ToolCalls
+		}
+	}
+	if len(calls) != 1 || calls[0].Function.Name != "grep" || calls[0].Function.Arguments != `{"pattern":"TODO","path":"."}` {
+		t.Fatalf("response.completed tool arguments not reconstructed: %+v", calls)
+	}
+}
+
 func TestOpenAICompatibleProviderUnauthorized(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Forbidden", http.StatusForbidden)

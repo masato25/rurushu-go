@@ -204,7 +204,7 @@ func TestRunStillReturnsMaxStepsWhenFinalSynthesisIsEmpty(t *testing.T) {
 func TestRepeatedIdenticalToolCallGetsStopHint(t *testing.T) {
 	registry := tool.NewRegistry()
 	registry.Register(echoTool{})
-	client, err := New(&loopingProvider{}, Config{Tools: registry, Permission: permission.AllowAll{}, ToolMaxSteps: 3})
+	client, err := New(&loopingProvider{}, Config{Tools: registry, Permission: permission.AllowAll{}, ToolMaxSteps: 10})
 	if err != nil {
 		t.Fatal(err)
 	}

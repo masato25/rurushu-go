@@ -29,3 +29,16 @@ func TestToolCallAccumulatorFinalIsAuthoritative(t *testing.T) {
 		t.Fatalf("calls = %#v", calls)
 	}
 }
+
+func TestToolCallAccumulatorAcceptsIDAfterArgumentDelta(t *testing.T) {
+	a := NewToolCallAccumulator()
+	a.AddChunk(0, "", "", `{"path":"`)
+	a.AddChunk(0, "call-real", "read", `README.md"}`)
+	calls := a.Collect()
+	if len(calls) != 1 {
+		t.Fatalf("calls = %#v", calls)
+	}
+	if calls[0].ID != "call-real" || calls[0].Function.Name != "read" || calls[0].Function.Arguments != `{"path":"README.md"}` {
+		t.Fatalf("call = %#v", calls[0])
+	}
+}

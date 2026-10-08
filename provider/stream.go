@@ -25,10 +25,10 @@ func (a *ToolCallAccumulator) AddChunk(index int, id, name, argsChunk string) {
 	call, ok := a.calls[index]
 	if !ok {
 		call = &accumulatedCall{id: id, name: name}
-		if call.id == "" {
-			call.id = fmt.Sprintf("call_%d", index)
-		}
 		a.calls[index] = call
+	}
+	if id != "" && call.id == "" {
+		call.id = id
 	}
 	if name != "" && call.name == "" {
 		call.name = name
@@ -46,9 +46,6 @@ func (a *ToolCallAccumulator) SetFinal(index int, id, name, args string) {
 	}
 	if id != "" {
 		call.id = id
-	}
-	if call.id == "" {
-		call.id = fmt.Sprintf("call_%d", index)
 	}
 	if name != "" {
 		call.name = name
@@ -71,11 +68,15 @@ func (a *ToolCallAccumulator) Collect() []ToolCall {
 	result := make([]ToolCall, 0, len(indices))
 	for _, idx := range indices {
 		c := a.calls[idx]
+		id := c.id
+		if id == "" {
+			id = fmt.Sprintf("call_%d", idx)
+		}
 		args := strings.TrimSpace(c.arguments.String())
 		if args == "" {
 			args = "{}"
 		}
-		result = append(result, ToolCall{ID: c.id, Type: "function", Function: FunctionCall{Name: c.name, Arguments: args}})
+		result = append(result, ToolCall{ID: id, Type: "function", Function: FunctionCall{Name: c.name, Arguments: args}})
 	}
 	return result
 }
