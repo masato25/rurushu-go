@@ -61,6 +61,7 @@ func run(args []string) error {
 	maxSteps := fs.Int("max-steps", saved.MaxSteps, "maximum model/tool turns per request")
 	maxContext := fs.Int("max-context-tokens", saved.MaxContextTokens, "approximate context budget before compaction")
 	compactAt := fs.Float64("compact-at", saved.CompactAt, "context compaction threshold percent")
+	activity := fs.String("activity", firstNonEmpty(os.Getenv("RURUSHU_ACTIVITY"), "normal"), "activity display: normal, verbose, or debug")
 	listModels := fs.Bool("list-models", false, "list models and exit")
 	var promptFiles stringList
 	fs.Var(&promptFiles, "prompt-file", "append a prompt file; repeatable")
@@ -73,6 +74,10 @@ func run(args []string) error {
 	}
 	if *maxSteps <= 0 || *maxContext <= 0 || *compactAt < 0 || *compactAt > 100 {
 		return errors.New("max-steps/max-context-tokens must be positive and compact-at must be between 0 and 100")
+	}
+	activityMode, err := tui.ParseActivityMode(*activity)
+	if err != nil {
+		return err
 	}
 	absCWD, err := filepath.Abs(strings.TrimSpace(*cwd))
 	if err != nil {
@@ -122,6 +127,7 @@ func run(args []string) error {
 	}
 
 	uiModel := tui.NewWithStreamer(model, prov.ID(), client)
+	uiModel.SetActivityMode(activityMode)
 	uiModel.SetPermissionRequests(permissionUI.Requests())
 	if len(fs.Args()) > 0 {
 		uiModel.SetInitialInput(strings.Join(fs.Args(), " "))

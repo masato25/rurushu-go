@@ -54,6 +54,8 @@ go build -o bin/rurushu ./cmd/rurushu
 
 TUI controls: `Enter` sends, `Shift+Enter` inserts a newline, `Esc` cancels the active model request, `PgUp/PgDn` scroll, and `Ctrl+C` exits. Permission prompts are approved with `y` and denied with `n`, `Enter`, or `Esc`.
 
+Tool activity is persistent in the transcript. `--activity normal` shows compact tool progress (default), `--activity verbose` adds compact args/result details, and `--activity debug` includes full tool results plus usage/context-compaction events. Raw model chain-of-thought is never rendered; reasoning streams only produce a generic `thinking` progress marker.
+
 The standalone binary includes three read-only repository tools scoped to the active working directory: `read`, `glob`, and `grep`. They reject paths and symlinks that escape `--cwd`. Mutating filesystem and shell tools are intentionally not enabled yet.
 
 ## Packages

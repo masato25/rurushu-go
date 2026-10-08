@@ -14,9 +14,10 @@ import (
 )
 
 type Message struct {
-	Role    string
-	Content string
-	Local   bool
+	Role     string
+	Content  string
+	Local    bool
+	Activity *activityEntry
 }
 
 type Streamer interface {
@@ -50,6 +51,8 @@ type Model struct {
 	toolActivity        string
 	streamAssistantText string
 	streamReasoningText string
+	activityMode        ActivityMode
+	thinkingVisible     bool
 }
 
 type streamStartedMsg struct {
@@ -73,6 +76,7 @@ type permissionPromptMsg struct {
 const (
 	roleUser      = "user"
 	roleAssistant = "assistant"
+	roleActivity  = "activity"
 )
 
 func New(modelName, provider string) *Model {
@@ -106,11 +110,12 @@ func NewWithStreamer(modelName, providerID string, llm Streamer) *Model {
 	vp.MouseWheelEnabled = true
 
 	m := &Model{
-		viewport:  vp,
-		composer:  composer,
-		modelName: modelName,
-		provider:  providerID,
-		llm:       llm,
+		viewport:     vp,
+		composer:     composer,
+		modelName:    modelName,
+		provider:     providerID,
+		llm:          llm,
+		activityMode: ActivityNormal,
 	}
 	m.refreshConversation()
 	return m
@@ -132,6 +137,14 @@ func (m *Model) SetInitialInput(content string) {
 
 func (m *Model) SetPermissionRequests(requests <-chan *permission.Prompt) {
 	m.permissionRequests = requests
+}
+
+func (m *Model) SetActivityMode(mode ActivityMode) {
+	if mode == "" {
+		mode = ActivityNormal
+	}
+	m.activityMode = mode
+	m.refreshConversation()
 }
 
 func (m *Model) Init() tea.Cmd {
@@ -259,6 +272,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.history = append(m.history, provider.Message{Role: provider.RoleUser, Content: value})
 				m.streamAssistantText = ""
 				m.streamReasoningText = ""
+				m.thinkingVisible = false
 				m.messages = append(m.messages, Message{Role: roleAssistant})
 				m.streaming = true
 				m.streamSeq++
@@ -443,10 +457,17 @@ func (m *Model) refreshConversation() {
 	} else {
 		for idx, message := range m.messages {
 			if idx > 0 {
-				b.WriteString("\n\n")
+				previous := m.messages[idx-1]
+				if message.Role == roleActivity || previous.Role == roleActivity {
+					b.WriteString("\n")
+				} else {
+					b.WriteString("\n\n")
+				}
 			}
 			if message.Role == roleUser {
 				b.WriteString(renderTranscript("›", message.Content, inner, userMarkerStyle))
+			} else if message.Role == roleActivity {
+				b.WriteString(renderActivity(message.Activity, m.activityMode, inner))
 			} else {
 				content := message.Content
 				if content == "" && m.streaming && idx == len(m.messages)-1 {
@@ -522,13 +543,17 @@ func (m *Model) resolvePermission(approved bool) {
 func (m *Model) applyStreamEvent(event provider.StreamEvent) bool {
 	switch event.Type {
 	case provider.EventToken:
-		if len(m.messages) > 0 && m.messages[len(m.messages)-1].Role == roleAssistant {
-			m.messages[len(m.messages)-1].Content += event.Text
-		}
+		m.ensureAssistantMessage()
+		m.messages[len(m.messages)-1].Content += event.Text
 		m.streamAssistantText += event.Text
+		m.thinkingVisible = false
 		m.toolActivity = ""
 	case provider.EventReasoning:
 		m.streamReasoningText += event.ReasoningText
+		if !m.thinkingVisible {
+			m.appendActivity(&activityEntry{Kind: "thinking"})
+			m.thinkingVisible = true
+		}
 	case provider.EventToolCall:
 		m.history = append(m.history, provider.Message{
 			Role:             provider.RoleAssistant,
@@ -541,16 +566,29 @@ func (m *Model) applyStreamEvent(event provider.StreamEvent) bool {
 	case provider.EventToolStart:
 		if event.ToolExecution != nil {
 			m.toolActivity = "tool " + event.ToolExecution.Tool
+			m.thinkingVisible = false
+			m.appendActivity(&activityEntry{Kind: "tool", ID: event.ToolExecution.ID, Tool: event.ToolExecution.Tool, Args: event.ToolExecution.Args})
 		}
 	case provider.EventToolResult:
 		m.toolActivity = ""
 		if event.ToolExecution != nil {
+			m.finishToolActivity(event.ToolExecution)
 			m.history = append(m.history, provider.Message{
 				Role:       provider.RoleTool,
 				ToolCallID: event.ToolExecution.ID,
 				Name:       event.ToolExecution.Tool,
 				Content:    event.ToolExecution.Output,
 			})
+		}
+	case provider.EventUsage:
+		if m.activityMode == ActivityDebug && event.Usage != nil {
+			usage := *event.Usage
+			m.appendActivity(&activityEntry{Kind: "usage", Usage: &usage, Done: true})
+		}
+	case provider.EventContextCompact:
+		if m.activityMode == ActivityDebug && event.Compaction != nil {
+			compact := *event.Compaction
+			m.appendActivity(&activityEntry{Kind: "compact", Compact: &compact, Done: true})
 		}
 	case provider.EventError:
 		m.finishStreamWithError(event.Error)
@@ -561,6 +599,41 @@ func (m *Model) applyStreamEvent(event provider.StreamEvent) bool {
 		return true
 	}
 	return false
+}
+
+func (m *Model) ensureAssistantMessage() {
+	if len(m.messages) > 0 && m.messages[len(m.messages)-1].Role == roleAssistant {
+		return
+	}
+	m.messages = append(m.messages, Message{Role: roleAssistant})
+}
+
+func (m *Model) appendActivity(activity *activityEntry) {
+	entry := Message{Role: roleActivity, Local: true, Activity: activity}
+	if len(m.messages) > 0 {
+		last := len(m.messages) - 1
+		if m.messages[last].Role == roleAssistant && strings.TrimSpace(m.messages[last].Content) == "" {
+			m.messages[last] = entry
+			return
+		}
+	}
+	m.messages = append(m.messages, entry)
+}
+
+func (m *Model) finishToolActivity(info *provider.ToolExecutionInfo) {
+	for i := len(m.messages) - 1; i >= 0; i-- {
+		activity := m.messages[i].Activity
+		if m.messages[i].Role != roleActivity || activity == nil || activity.Kind != "tool" {
+			continue
+		}
+		if activity.ID == info.ID || (activity.ID == "" && activity.Tool == info.Tool && !activity.Done) {
+			activity.Output = info.Output
+			activity.IsError = info.IsError
+			activity.Done = true
+			return
+		}
+	}
+	m.appendActivity(&activityEntry{Kind: "tool", ID: info.ID, Tool: info.Tool, Args: info.Args, Output: info.Output, IsError: info.IsError, Done: true})
 }
 
 func (m *Model) commitAssistantHistory() {

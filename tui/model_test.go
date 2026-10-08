@@ -231,7 +231,7 @@ func TestToolHistoryPersistsAcrossTurns(t *testing.T) {
 	}
 }
 
-func TestToolEventsOnlyAffectCompactStatus(t *testing.T) {
+func TestToolEventsPersistInTranscript(t *testing.T) {
 	m := New("test-model", "openai-compatible")
 	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m.streaming = true
@@ -239,19 +239,89 @@ func TestToolEventsOnlyAffectCompactStatus(t *testing.T) {
 	m.applyStreamEvent(provider.StreamEvent{
 		Type: provider.EventToolStart,
 		ToolExecution: &provider.ToolExecutionInfo{
-			Tool: "git_status",
+			ID:   "call-1",
+			Tool: "read",
+			Args: `{"path":"README.md"}`,
 		},
 	})
-	if !strings.Contains(m.statusView(), "tool git_status") {
+	if !strings.Contains(m.statusView(), "tool read") {
 		t.Fatalf("tool activity missing from status: %q", m.statusView())
 	}
-	if len(m.messages) != 0 {
-		t.Fatalf("tool status polluted transcript: %#v", m.messages)
+	if len(m.messages) != 1 || m.messages[0].Role != roleActivity || m.messages[0].Activity == nil {
+		t.Fatalf("tool activity missing from transcript: %#v", m.messages)
+	}
+	m.refreshConversation()
+	if view := m.viewport.View(); !strings.Contains(view, "◦ read") || !strings.Contains(view, "README.md") {
+		t.Fatalf("running tool activity not rendered: %q", view)
 	}
 
-	m.applyStreamEvent(provider.StreamEvent{Type: provider.EventToolResult})
-	if strings.Contains(m.statusView(), "tool git_status") {
+	m.applyStreamEvent(provider.StreamEvent{Type: provider.EventToolResult, ToolExecution: &provider.ToolExecutionInfo{
+		ID: "call-1", Tool: "read", Args: `{"path":"README.md"}`, Output: "    1│ # Rurushu\n    2│ hello",
+	}})
+	if strings.Contains(m.statusView(), "tool read") {
 		t.Fatalf("tool activity did not clear: %q", m.statusView())
+	}
+	m.refreshConversation()
+	if view := m.viewport.View(); !strings.Contains(view, "✓ read") || !strings.Contains(view, "2 lines") {
+		t.Fatalf("completed tool activity not rendered: %q", view)
+	}
+}
+
+func TestReasoningRendersOnlyGenericProgress(t *testing.T) {
+	m := New("test-model", "openai-compatible")
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.streaming = true
+	m.messages = append(m.messages, Message{Role: roleAssistant})
+
+	m.applyStreamEvent(provider.StreamEvent{Type: provider.EventReasoning, ReasoningText: "private detailed chain of thought"})
+	m.refreshConversation()
+	view := m.viewport.View()
+	if !strings.Contains(view, "thinking") {
+		t.Fatalf("generic thinking progress missing: %q", view)
+	}
+	if strings.Contains(view, "private detailed chain of thought") {
+		t.Fatalf("raw reasoning leaked into transcript: %q", view)
+	}
+}
+
+func TestActivityModes(t *testing.T) {
+	for _, mode := range []ActivityMode{ActivityNormal, ActivityVerbose, ActivityDebug} {
+		m := New("test-model", "openai-compatible")
+		m.SetActivityMode(mode)
+		m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+		m.messages = []Message{{Role: roleActivity, Activity: &activityEntry{
+			Kind: "tool", ID: "call-1", Tool: "grep", Args: `{"pattern":"TODO","path":"."}`, Output: "main.go:10: TODO fix\nREADME.md:2: TODO docs", Done: true,
+		}}}
+		m.refreshConversation()
+		view := m.viewport.View()
+		if !strings.Contains(view, "✓ grep") {
+			t.Fatalf("mode %s missing tool activity: %q", mode, view)
+		}
+		switch mode {
+		case ActivityNormal:
+			if strings.Contains(view, "args:") || strings.Contains(view, "result:") {
+				t.Fatalf("normal mode too verbose: %q", view)
+			}
+		case ActivityVerbose:
+			if !strings.Contains(view, "args:") || !strings.Contains(view, "result:") {
+				t.Fatalf("verbose mode missing details: %q", view)
+			}
+		case ActivityDebug:
+			if !strings.Contains(view, "main.go:10") || !strings.Contains(view, "README.md:2") {
+				t.Fatalf("debug mode missing full result: %q", view)
+			}
+		}
+	}
+}
+
+func TestParseActivityMode(t *testing.T) {
+	for _, value := range []string{"normal", "verbose", "debug", ""} {
+		if _, err := ParseActivityMode(value); err != nil {
+			t.Fatalf("ParseActivityMode(%q): %v", value, err)
+		}
+	}
+	if _, err := ParseActivityMode("raw-thinking"); err == nil {
+		t.Fatal("expected invalid activity mode error")
 	}
 }
 
