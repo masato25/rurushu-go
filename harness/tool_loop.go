@@ -63,6 +63,9 @@ func (c *Client) streamWithTools(ctx context.Context, initial provider.Completio
 					}
 				case provider.EventToolCall:
 					toolCalls = event.ToolCalls
+					if !emitEvent(ctx, out, event) {
+						return
+					}
 				case provider.EventUsage:
 					usage = event.Usage
 					if !emitEvent(ctx, out, event) {

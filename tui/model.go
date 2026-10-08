@@ -32,6 +32,7 @@ type Model struct {
 	viewport viewport.Model
 	composer textarea.Model
 	messages []Message
+	history  []provider.Message
 
 	modelName string
 	provider  string
@@ -40,13 +41,15 @@ type Model struct {
 	permissionRequests <-chan *permission.Prompt
 	pendingPermission  *permission.Prompt
 
-	streaming    bool
-	stream       <-chan provider.StreamEvent
-	cancelStream context.CancelFunc
-	streamSeq    uint64
-	activeStream uint64
-	followStream bool
-	toolActivity string
+	streaming           bool
+	stream              <-chan provider.StreamEvent
+	cancelStream        context.CancelFunc
+	streamSeq           uint64
+	activeStream        uint64
+	followStream        bool
+	toolActivity        string
+	streamAssistantText string
+	streamReasoningText string
 }
 
 type streamStartedMsg struct {
@@ -253,6 +256,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.composer.Reset()
 
 			if m.llm != nil {
+				m.history = append(m.history, provider.Message{Role: provider.RoleUser, Content: value})
+				m.streamAssistantText = ""
+				m.streamReasoningText = ""
 				m.messages = append(m.messages, Message{Role: roleAssistant})
 				m.streaming = true
 				m.streamSeq++
@@ -473,22 +479,9 @@ func (m *Model) statusView() string {
 }
 
 func (m *Model) completionRequest() provider.CompletionRequest {
-	messages := make([]provider.Message, 0, len(m.messages))
-	for _, message := range m.messages {
-		if message.Local {
-			continue
-		}
-		if message.Role == roleAssistant && strings.TrimSpace(message.Content) == "" {
-			continue
-		}
-		messages = append(messages, provider.Message{
-			Role:    message.Role,
-			Content: message.Content,
-		})
-	}
 	return provider.CompletionRequest{
 		Model:    m.modelName,
-		Messages: messages,
+		Messages: append([]provider.Message(nil), m.history...),
 	}
 }
 
@@ -532,21 +525,55 @@ func (m *Model) applyStreamEvent(event provider.StreamEvent) bool {
 		if len(m.messages) > 0 && m.messages[len(m.messages)-1].Role == roleAssistant {
 			m.messages[len(m.messages)-1].Content += event.Text
 		}
+		m.streamAssistantText += event.Text
 		m.toolActivity = ""
+	case provider.EventReasoning:
+		m.streamReasoningText += event.ReasoningText
+	case provider.EventToolCall:
+		m.history = append(m.history, provider.Message{
+			Role:             provider.RoleAssistant,
+			Content:          m.streamAssistantText,
+			ReasoningContent: m.streamReasoningText,
+			ToolCalls:        append([]provider.ToolCall(nil), event.ToolCalls...),
+		})
+		m.streamAssistantText = ""
+		m.streamReasoningText = ""
 	case provider.EventToolStart:
 		if event.ToolExecution != nil {
 			m.toolActivity = "tool " + event.ToolExecution.Tool
 		}
 	case provider.EventToolResult:
 		m.toolActivity = ""
+		if event.ToolExecution != nil {
+			m.history = append(m.history, provider.Message{
+				Role:       provider.RoleTool,
+				ToolCallID: event.ToolExecution.ID,
+				Name:       event.ToolExecution.Tool,
+				Content:    event.ToolExecution.Output,
+			})
+		}
 	case provider.EventError:
 		m.finishStreamWithError(event.Error)
 		return true
 	case provider.EventDone:
+		m.commitAssistantHistory()
 		m.finishStream()
 		return true
 	}
 	return false
+}
+
+func (m *Model) commitAssistantHistory() {
+	if m.streamAssistantText == "" && m.streamReasoningText == "" {
+		return
+	}
+	m.history = append(m.history, provider.Message{
+		Role:             provider.RoleAssistant,
+		Content:          m.streamAssistantText,
+		ReasoningContent: m.streamReasoningText,
+	})
+	m.streamAssistantText = ""
+	m.streamReasoningText = ""
 }
 
 func (m *Model) finishStream() {

@@ -145,3 +145,29 @@ func TestRunStopsAtToolStepLimit(t *testing.T) {
 		t.Fatalf("max-step error = %v", err)
 	}
 }
+
+func TestStreamForwardsToolCallEvent(t *testing.T) {
+	prov := &scriptedProvider{}
+	registry := tool.NewRegistry()
+	registry.Register(echoTool{})
+	client, err := New(prov, Config{Tools: registry, Permission: permission.AllowAll{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := client.Stream(context.Background(), provider.CompletionRequest{Model: "test", Messages: []provider.Message{{Role: provider.RoleUser, Content: "go"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for event := range stream {
+		if event.Type == provider.EventToolCall {
+			found = true
+			if len(event.ToolCalls) != 1 || event.ToolCalls[0].Function.Name != "echo" {
+				t.Fatalf("tool call event = %#v", event)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("tool call event was not forwarded")
+	}
+}

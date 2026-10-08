@@ -54,7 +54,7 @@ go build -o bin/rurushu ./cmd/rurushu
 
 TUI controls: `Enter` sends, `Shift+Enter` inserts a newline, `Esc` cancels the active model request, `PgUp/PgDn` scroll, and `Ctrl+C` exits. Permission prompts are approved with `y` and denied with `n`, `Enter`, or `Esc`.
 
-The standalone binary currently ships without built-in filesystem or shell tools. The harness supports tools, but applications must register the capabilities they actually want to expose.
+The standalone binary includes three read-only repository tools scoped to the active working directory: `read`, `glob`, and `grep`. They reject paths and symlinks that escape `--cwd`. Mutating filesystem and shell tools are intentionally not enabled yet.
 
 ## Packages
 

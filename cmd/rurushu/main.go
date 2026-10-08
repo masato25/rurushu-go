@@ -16,6 +16,8 @@ import (
 	"github.com/arborlogic/rurushu-go/harness"
 	"github.com/arborlogic/rurushu-go/permission"
 	"github.com/arborlogic/rurushu-go/provider"
+	"github.com/arborlogic/rurushu-go/tool"
+	"github.com/arborlogic/rurushu-go/tool/builtin"
 	"github.com/arborlogic/rurushu-go/tui"
 )
 
@@ -103,10 +105,13 @@ func run(args []string) error {
 	}
 
 	permissionUI := permission.NewTUIHandler()
+	registry := tool.NewRegistry()
+	builtin.RegisterReadOnly(registry)
 	client, err := harness.New(prov, harness.Config{
 		CWD:                absCWD,
 		SystemPrompt:       *systemPrompt,
 		PromptFiles:        promptFiles,
+		Tools:              registry,
 		ToolMaxSteps:       *maxSteps,
 		MaxContextTokens:   *maxContext,
 		AutoCompactPercent: *compactAt,

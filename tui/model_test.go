@@ -47,6 +47,23 @@ func (f *controlledStreamer) Stream(ctx context.Context, req provider.Completion
 	return f.ch, nil
 }
 
+type sequenceStreamer struct {
+	reqs    []provider.CompletionRequest
+	scripts [][]provider.StreamEvent
+}
+
+func (s *sequenceStreamer) Stream(_ context.Context, req provider.CompletionRequest) (<-chan provider.StreamEvent, error) {
+	s.reqs = append(s.reqs, req)
+	idx := len(s.reqs) - 1
+	events := s.scripts[idx]
+	ch := make(chan provider.StreamEvent, len(events))
+	for _, event := range events {
+		ch <- event
+	}
+	close(ch)
+	return ch, nil
+}
+
 func TestComposerDoesNotGrowOnFirstCharacter(t *testing.T) {
 	m := New("test-model", "openai-compatible")
 	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -127,7 +144,7 @@ func TestWorkbenchIsLeftAnchoredAndHasNoLegacyChrome(t *testing.T) {
 	}
 }
 
-func TestZeroAPIStreamAppendsAssistantTokens(t *testing.T) {
+func TestOpenAICompatibleStreamAppendsAssistantTokens(t *testing.T) {
 	streamer := &fakeStreamer{events: []provider.StreamEvent{
 		{Type: provider.EventToken, Text: "hello"},
 		{Type: provider.EventToken, Text: " world"},
@@ -157,6 +174,60 @@ func TestZeroAPIStreamAppendsAssistantTokens(t *testing.T) {
 	}
 	if len(streamer.req.Messages) != 1 || streamer.req.Messages[0].Content != "ping" {
 		t.Fatalf("unexpected request messages: %#v", streamer.req.Messages)
+	}
+}
+
+func TestToolHistoryPersistsAcrossTurns(t *testing.T) {
+	streamer := &sequenceStreamer{scripts: [][]provider.StreamEvent{
+		{
+			{Type: provider.EventToolCall, ToolCalls: []provider.ToolCall{{ID: "call-1", Type: "function", Function: provider.FunctionCall{Name: "read", Arguments: `{"path":"README.md"}`}}}},
+			{Type: provider.EventToolStart, ToolExecution: &provider.ToolExecutionInfo{ID: "call-1", Tool: "read", Args: `{"path":"README.md"}`}},
+			{Type: provider.EventToolResult, ToolExecution: &provider.ToolExecutionInfo{ID: "call-1", Tool: "read", Output: "README contents"}},
+			{Type: provider.EventToken, Text: "first answer"},
+			{Type: provider.EventDone},
+		},
+		{
+			{Type: provider.EventToken, Text: "second answer"},
+			{Type: provider.EventDone},
+		},
+	}}
+	m := NewWithStreamer("gpt-test", "openai-compatible", streamer)
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	m.composer.SetValue("inspect readme")
+	_, cmd := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	msg := cmd()
+	_, cmd = m.Update(msg)
+	for cmd != nil {
+		msg = cmd()
+		_, cmd = m.Update(msg)
+	}
+
+	m.composer.SetValue("what did you find?")
+	_, cmd = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	_ = cmd()
+
+	if len(streamer.reqs) != 2 {
+		t.Fatalf("requests = %d", len(streamer.reqs))
+	}
+	history := streamer.reqs[1].Messages
+	if len(history) != 5 {
+		t.Fatalf("history = %#v", history)
+	}
+	if history[0].Role != provider.RoleUser || history[0].Content != "inspect readme" {
+		t.Fatalf("first user message = %#v", history[0])
+	}
+	if history[1].Role != provider.RoleAssistant || len(history[1].ToolCalls) != 1 || history[1].ToolCalls[0].Function.Name != "read" {
+		t.Fatalf("assistant tool call = %#v", history[1])
+	}
+	if history[2].Role != provider.RoleTool || history[2].ToolCallID != "call-1" || history[2].Content != "README contents" {
+		t.Fatalf("tool result = %#v", history[2])
+	}
+	if history[3].Role != provider.RoleAssistant || history[3].Content != "first answer" {
+		t.Fatalf("assistant answer = %#v", history[3])
+	}
+	if history[4].Role != provider.RoleUser || history[4].Content != "what did you find?" {
+		t.Fatalf("second user message = %#v", history[4])
 	}
 }
 
