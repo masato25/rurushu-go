@@ -246,6 +246,9 @@ func (p *OpenAICompatibleProvider) Stream(ctx context.Context, req CompletionReq
 	if req.MaxTokens != nil {
 		reqBody["max_tokens"] = *req.MaxTokens
 	}
+	if strings.TrimSpace(req.ReasoningEffort) != "" {
+		reqBody["reasoning_effort"] = strings.TrimSpace(req.ReasoningEffort)
+	}
 	if len(req.Tools) > 0 {
 		reqBody["tools"] = req.Tools
 	}

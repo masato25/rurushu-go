@@ -15,6 +15,7 @@ type Config struct {
 	BaseURL          string  `json:"base_url,omitempty"`
 	APIKey           string  `json:"api_key,omitempty"`
 	Model            string  `json:"model,omitempty"`
+	ReasoningEffort  string  `json:"reasoning_effort,omitempty"`
 	SystemPrompt     string  `json:"system_prompt,omitempty"`
 	MaxSteps         int     `json:"max_steps,omitempty"`
 	MaxContextTokens int     `json:"max_context_tokens,omitempty"`

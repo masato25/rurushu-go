@@ -45,6 +45,32 @@ func TestOpenAICompatibleProviderSendsMultimodalContent(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatibleProviderForwardsReasoningEffort(t *testing.T) {
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	prov := NewOpenAICompatibleProvider(server.URL, "")
+	events, err := prov.Stream(context.Background(), CompletionRequest{
+		Model: "openaicodex/gpt-5.6-sol", Messages: []Message{{Role: RoleUser, Content: "hello"}},
+		ReasoningEffort: "low",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range events {
+	}
+	if body["reasoning_effort"] != "low" {
+		t.Fatalf("reasoning_effort=%#v, want low", body["reasoning_effort"])
+	}
+}
+
 func TestOpenAICompatibleProviderStreaming(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer test-secret-key" {

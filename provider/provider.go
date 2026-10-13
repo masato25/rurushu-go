@@ -41,11 +41,12 @@ type TokenUsage struct {
 }
 
 type CompletionRequest struct {
-	Model       string           `json:"model"`
-	Messages    []Message        `json:"messages"`
-	Tools       []map[string]any `json:"tools,omitempty"`
-	Temperature *float64         `json:"temperature,omitempty"`
-	MaxTokens   *int             `json:"max_tokens,omitempty"`
+	Model           string           `json:"model"`
+	Messages        []Message        `json:"messages"`
+	Tools           []map[string]any `json:"tools,omitempty"`
+	Temperature     *float64         `json:"temperature,omitempty"`
+	MaxTokens       *int             `json:"max_tokens,omitempty"`
+	ReasoningEffort string           `json:"reasoning_effort,omitempty"`
 }
 
 type EventType string
