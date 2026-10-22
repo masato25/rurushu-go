@@ -117,6 +117,8 @@ or a command allowlist). Version 1 requests remain accepted but cannot include
 
 TUI controls: `Enter` sends, `Shift+Enter` inserts a newline, `Esc` cancels the active model request, `PgUp/PgDn` scroll, and `Ctrl+C` exits. Permission prompts are approved with `y` and denied with `n`, `Enter`, or `Esc`.
 
+For trusted tasks only, start the TUI with `rurushu --auto-approve` to approve all tool permission requests without prompting, including shell execution and job termination. This is disabled by default and allows potentially destructive commands to run without confirmation. To persist it, set `"auto_approve": true` in `~/.config/rurushu/config.json`; override that setting for a session with `--auto-approve=false`. Headless runs keep their separate explicit `permission_mode` policy and do not inherit this setting.
+
 Local slash commands are handled by the TUI before a prompt reaches the model. The standalone client currently includes:
 
 ```text

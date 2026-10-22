@@ -1,12 +1,58 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/masato25/rurushu-go/permission"
 )
+
+func TestPermissionHandlerAutoApprove(t *testing.T) {
+	handler, requests := newPermissionHandler(true)
+	if requests != nil {
+		t.Fatal("auto approve must not start an interactive permission listener")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	approved, err := handler.Ask(ctx, permission.Request{Tool: "bash", Pattern: "make test"})
+	if err != nil || !approved {
+		t.Fatalf("approved = %v, err = %v", approved, err)
+	}
+}
+
+func TestPermissionHandlerManualApproval(t *testing.T) {
+	for _, decision := range []bool{true, false} {
+		handler, requests := newPermissionHandler(false)
+		if requests == nil {
+			t.Fatal("manual approval requires an interactive permission listener")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		result := make(chan bool, 1)
+		go func() {
+			approved, err := handler.Ask(ctx, permission.Request{Tool: "bash"})
+			if err != nil {
+				t.Errorf("Ask: %v", err)
+			}
+			result <- approved
+		}()
+		select {
+		case prompt := <-requests:
+			prompt.Resolve(decision)
+		case <-ctx.Done():
+			cancel()
+			t.Fatal("permission prompt not received")
+		}
+		if approved := <-result; approved != decision {
+			t.Fatalf("approved = %v, want %v", approved, decision)
+		}
+		cancel()
+	}
+}
 
 func TestFirstNonEmpty(t *testing.T) {
 	if got := firstNonEmpty(" ", " second ", "third"); got != "second" {

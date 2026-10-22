@@ -20,6 +20,7 @@ type Config struct {
 	MaxSteps         int     `json:"max_steps,omitempty"`
 	MaxContextTokens int     `json:"max_context_tokens,omitempty"`
 	CompactAt        float64 `json:"compact_at,omitempty"`
+	AutoApprove      bool    `json:"auto_approve,omitempty"`
 }
 
 func Defaults() Config {

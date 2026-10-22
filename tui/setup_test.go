@@ -11,7 +11,9 @@ import (
 func TestSetupSave(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", root)
-	m := NewSetupModel(rurushuconfig.Defaults())
+	cfg := rurushuconfig.Defaults()
+	cfg.AutoApprove = true
+	m := NewSetupModel(cfg)
 	m.inputs[setupModel].SetValue("test-model")
 	if err := m.save(); err != nil {
 		t.Fatal(err)
@@ -21,6 +23,13 @@ func TestSetupSave(t *testing.T) {
 	}
 	if _, err := os.Stat(m.SavedPath()); err != nil {
 		t.Fatal(err)
+	}
+	saved, err := rurushuconfig.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !saved.AutoApprove {
+		t.Fatal("setup must preserve the auto approve setting")
 	}
 }
 

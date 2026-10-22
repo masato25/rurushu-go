@@ -71,6 +71,7 @@ func run(args []string) error {
 	compactAt := fs.Float64("compact-at", saved.CompactAt, "context compaction threshold percent")
 	activity := fs.String("activity", firstNonEmpty(os.Getenv("RURUSHU_ACTIVITY"), "normal"), "activity display: normal, verbose, or debug")
 	listModels := fs.Bool("list-models", false, "list models and exit")
+	autoApprove := fs.Bool("auto-approve", saved.AutoApprove, "automatically approve all tool operations (unsafe; trusted tasks only)")
 	resumeSession := fs.String("resume", "", "resume project session by id or 'last'")
 	var promptFiles stringList
 	fs.Var(&promptFiles, "prompt-file", "append a prompt file; repeatable")
@@ -144,7 +145,7 @@ func run(args []string) error {
 		return fmt.Errorf("initialize project session: %w", err)
 	}
 
-	permissionUI := permission.NewTUIHandler()
+	permissionHandler, permissionRequests := newPermissionHandler(*autoApprove)
 	registry := tool.NewRegistry()
 	builtin.RegisterReadOnly(registry)
 	builtin.RegisterExecution(registry, jobManager)
@@ -156,7 +157,7 @@ func run(args []string) error {
 		ToolMaxSteps:       *maxSteps,
 		MaxContextTokens:   *maxContext,
 		AutoCompactPercent: *compactAt,
-		Permission:         permissionUI,
+		Permission:         permissionHandler,
 	})
 	if err != nil {
 		return err
@@ -164,7 +165,7 @@ func run(args []string) error {
 
 	uiModel := tui.NewWithStreamer(model, prov.ID(), client)
 	uiModel.SetActivityMode(activityMode)
-	uiModel.SetPermissionRequests(permissionUI.Requests())
+	uiModel.SetPermissionRequests(permissionRequests)
 	uiModel.SetJobManager(jobManager)
 	uiModel.SetProjectSession(projectStore, session)
 	if len(fs.Args()) > 0 {
@@ -172,6 +173,14 @@ func run(args []string) error {
 	}
 	_, err = tea.NewProgram(uiModel).Run()
 	return err
+}
+
+func newPermissionHandler(autoApprove bool) (permission.Handler, <-chan *permission.Prompt) {
+	if autoApprove {
+		return permission.AllowAll{}, nil
+	}
+	handler := permission.NewTUIHandler()
+	return handler, handler.Requests()
 }
 
 func runJobRunner(args []string) error {

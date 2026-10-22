@@ -18,6 +18,7 @@ func TestSaveAndLoad(t *testing.T) {
 		MaxSteps:         12,
 		MaxContextTokens: 32000,
 		CompactAt:        75,
+		AutoApprove:      true,
 	}
 	path, err := Save(want)
 	if err != nil {
@@ -50,5 +51,8 @@ func TestLoadMissingUsesDefaults(t *testing.T) {
 	}
 	if got.BaseURL == "" || got.SystemPrompt == "" || got.MaxSteps <= 0 {
 		t.Fatalf("defaults not applied: %#v", got)
+	}
+	if got.AutoApprove {
+		t.Fatal("auto approve must be disabled by default")
 	}
 }

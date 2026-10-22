@@ -138,6 +138,7 @@ func (m *SetupModel) save() error {
 		MaxSteps:         maxSteps,
 		MaxContextTokens: maxContext,
 		CompactAt:        compactAt,
+		AutoApprove:      m.config.AutoApprove,
 	}
 	path, err := rurushuconfig.Save(m.config)
 	if err != nil {
