@@ -631,6 +631,7 @@ func renderMarkdown(content string, width int) string {
 	if strings.TrimSpace(content) == "" {
 		return content
 	}
+	content = normalizeCOSLinks(content)
 	renderer, err := glamour.NewTermRenderer(glamour.WithStyles(rurushuMarkdownStyle()), glamour.WithWordWrap(width), glamour.WithTableWrap(true))
 	if err != nil {
 		return content
@@ -646,6 +647,21 @@ func renderMarkdown(content string, width int) string {
 }
 
 var markdownOSC8 = regexp.MustCompile(`\x1b\]8;[^\x07\x1b]*(?:\x07|\x1b\\)`)
+
+// COS may transmit ChatGPT's rich link tokens rather than Markdown links.
+// Convert only well-formed HTTP(S) tokens; leave other tokens unchanged.
+var cosLinkToken = regexp.MustCompile(`url([^]+)(https?://[^[:space:]]+)`)
+
+func normalizeCOSLinks(content string) string {
+	return cosLinkToken.ReplaceAllStringFunc(content, func(token string) string {
+		parts := cosLinkToken.FindStringSubmatch(token)
+		if len(parts) != 3 {
+			return token
+		}
+		label := strings.NewReplacer("[", "\\[", "]", "\\]").Replace(parts[1])
+		return "[" + label + "](" + parts[2] + ")"
+	})
+}
 
 func (m *Model) statusView() string {
 	width := m.frame.Status.Width

@@ -228,6 +228,19 @@ func TestMarkdownLinksDoNotLeakOSC8Controls(t *testing.T) {
 	}
 }
 
+func TestCOSRichLinkTokensRenderAsReadableLinks(t *testing.T) {
+	source := "• urlGo Documentationhttps://go.dev/doc/\n• urlBubble Teahttps://github.com/charmbracelet/bubbletea"
+	got := ansi.Strip(renderMarkdown(source, 85))
+	for _, want := range []string{"Go Documentation", "https://go.dev/doc/", "Bubble Tea", "https://github.com/charmbracelet/bubbletea"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q: %q", want, got)
+		}
+	}
+	if strings.Contains(got, "url") || strings.Contains(got, "") || strings.Contains(got, "") {
+		t.Fatalf("raw rich-link token leaked: %q", got)
+	}
+}
+
 func TestCOSSnapshotCorrectionReplacesDisplayedAndSavedText(t *testing.T) {
 	m := NewWithStreamer("test", "cos", nil)
 	m.streaming = true
