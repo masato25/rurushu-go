@@ -60,6 +60,7 @@ func run(args []string) error {
 	fs := flag.NewFlagSet("rurushu", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 
+	providerName := fs.String("provider", firstNonEmpty(os.Getenv("RURUSHU_PROVIDER"), "openai-compatible"), "provider: openai-compatible or cos")
 	baseURL := fs.String("base-url", firstNonEmpty(os.Getenv("RURUSHU_BASE_URL"), os.Getenv("OPENAI_BASE_URL"), saved.BaseURL, "https://api.openai.com/v1"), "OpenAI-compatible API base URL")
 	apiKey := fs.String("api-key", firstNonEmpty(os.Getenv("RURUSHU_API_KEY"), os.Getenv("OPENAI_API_KEY"), saved.APIKey), "API key (prefer env vars)")
 	modelName := fs.String("model", firstNonEmpty(os.Getenv("RURUSHU_MODEL"), os.Getenv("OPENAI_MODEL"), saved.Model), "model name")
@@ -100,7 +101,19 @@ func run(args []string) error {
 		return fmt.Errorf("cwd %q: %w", absCWD, err)
 	}
 
-	prov := provider.NewOpenAICompatibleProvider(strings.TrimSpace(*baseURL), strings.TrimSpace(*apiKey))
+	var prov interface {
+		provider.Provider
+		provider.ModelLister
+		ID() string
+	}
+	switch strings.ToLower(strings.TrimSpace(*providerName)) {
+	case "openai-compatible", "openai":
+		prov = provider.NewOpenAICompatibleProvider(strings.TrimSpace(*baseURL), strings.TrimSpace(*apiKey))
+	case "cos", "chat-on-steroids":
+		prov = provider.NewCOSProvider(absCWD)
+	default:
+		return fmt.Errorf("unsupported provider %q", *providerName)
+	}
 	if *listModels {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
@@ -115,6 +128,9 @@ func run(args []string) error {
 	}
 
 	model := strings.TrimSpace(*modelName)
+	if model == "" && prov.ID() == "cos" {
+		model = "chatgpt-web"
+	}
 	if model == "" {
 		return errors.New("model is required; use --model, RURUSHU_MODEL, or OPENAI_MODEL (use --list-models to inspect the endpoint)")
 	}

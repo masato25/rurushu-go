@@ -632,8 +632,9 @@ func jobCountLabel(count int) string {
 
 func (m *Model) completionRequest() provider.CompletionRequest {
 	return provider.CompletionRequest{
-		Model:    m.modelName,
-		Messages: boundVisionHistory(m.history, maxRequestHistoryImages),
+		Model:     m.modelName,
+		Messages:  boundVisionHistory(m.history, maxRequestHistoryImages),
+		SessionID: m.sessionID,
 	}
 }
 

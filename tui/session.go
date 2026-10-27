@@ -95,6 +95,9 @@ func (m *Model) registerSessionSlashCommands() {
 		Usage:       "/rewind [ask-number|last]",
 		Description: "fork from an earlier ask and load it for editing",
 		Run: func(args string) (SlashCommandResult, error) {
+			if isCOSProvider(m.provider) {
+				return SlashCommandResult{}, fmt.Errorf("/rewind is not supported by the COS provider")
+			}
 			asks := userAskPositions(m.history)
 			value := strings.TrimSpace(args)
 			if value == "" {
@@ -132,6 +135,15 @@ func (m *Model) registerSessionSlashCommands() {
 			return SlashCommandResult{Output: output}, nil
 		},
 	})
+}
+
+func isCOSProvider(providerID string) bool {
+	switch strings.ToLower(strings.TrimSpace(providerID)) {
+	case "cos", "chat-on-steroids":
+		return true
+	default:
+		return false
+	}
 }
 
 func (m *Model) resumeSession(id string) (string, error) {

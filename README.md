@@ -69,6 +69,28 @@ You can also use `RURUSHU_API_KEY`, `RURUSHU_BASE_URL`, and `RURUSHU_MODEL`. Rur
 go run ./cmd/rurushu --model <model-name> "summarize what I should work on"
 ```
 
+### Chat On Steroids
+
+Rurushu can connect directly to the local Chat On Steroids Control API (no OpenAI API key required). Enable `controlApi` in Chat On Steroids, start the app, and configure the ChatGPT Project URL:
+
+```json
+// .openzerocode/cos.json (project) or ~/.openzerocode/cos.json (global)
+{
+  "project": "my-project",
+  "projectUrl": "https://chatgpt.com/g/g-p-.../project"
+}
+```
+
+Then run:
+
+```bash
+go run ./cmd/rurushu --provider cos
+# equivalent environment setting:
+RURUSHU_PROVIDER=cos go run ./cmd/rurushu
+```
+
+`COS_PROJECT` and `COS_PROJECT_URL` override the config files. Each Rurushu session is mapped one-to-one to a COS session in `~/.rurushu/cos-sessions-map.json`; resumed Rurushu sessions reuse their matching ChatGPT conversation. Set `COS_NEW=1` to force creation of a new mapping, or `COS_SESSION_ID` to bind an explicit COS session.
+
 To inspect models exposed by the endpoint:
 
 ```bash

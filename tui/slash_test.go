@@ -133,6 +133,23 @@ func TestClearSlashCommandResetsTranscriptAndHistory(t *testing.T) {
 	}
 }
 
+func TestClearSlashCommandRejectsCOSProvider(t *testing.T) {
+	m := New("chatgpt-web", "cos")
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.messages = append(m.messages, Message{Role: roleUser, Content: "old"})
+	m.history = append(m.history, provider.Message{Role: provider.RoleUser, Content: "old"})
+
+	if cmd := submitSlashTest(t, m, "/clear"); cmd != nil {
+		t.Fatal("/clear unexpectedly started async work")
+	}
+	if len(m.history) != 1 {
+		t.Fatalf("COS /clear mutated history: %#v", m.history)
+	}
+	if len(m.messages) < 2 || !strings.Contains(m.messages[len(m.messages)-1].Content, "not supported by the COS provider") {
+		t.Fatalf("COS /clear did not report unsupported operation: %#v", m.messages)
+	}
+}
+
 func TestRegisterSlashCommandValidation(t *testing.T) {
 	m := New("test-model", "test-provider")
 	for _, command := range []SlashCommand{

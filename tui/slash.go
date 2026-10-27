@@ -68,6 +68,9 @@ func (m *Model) registerDefaultSlashCommands() {
 		Usage:       "/clear",
 		Description: "clear the transcript and model conversation history",
 		Run: func(string) (SlashCommandResult, error) {
+			if isCOSProvider(m.provider) {
+				return SlashCommandResult{}, fmt.Errorf("/clear is not supported by the COS provider; use /new to start a new conversation")
+			}
 			return SlashCommandResult{ClearSession: true}, nil
 		},
 	})

@@ -47,6 +47,9 @@ type CompletionRequest struct {
 	Temperature     *float64         `json:"temperature,omitempty"`
 	MaxTokens       *int             `json:"max_tokens,omitempty"`
 	ReasoningEffort string           `json:"reasoning_effort,omitempty"`
+	// SessionID identifies the local Rurushu session to providers that maintain
+	// their own durable conversation, such as Chat On Steroids.
+	SessionID string `json:"-"`
 }
 
 type EventType string

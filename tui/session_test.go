@@ -172,6 +172,31 @@ func TestSessionSlashCommandsAppearInHelp(t *testing.T) {
 	}
 }
 
+func TestRewindRejectsCOSProvider(t *testing.T) {
+	store, err := projectstate.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := store.StartSession("chatgpt-web", "cos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := New("chatgpt-web", "cos")
+	m.SetProjectSession(store, session)
+	m.history = []provider.Message{{Role: provider.RoleUser, Content: "first ask"}}
+	originalID := m.sessionID
+
+	if cmd := submitSlashTest(t, m, "/rewind 1"); cmd != nil {
+		t.Fatal("/rewind unexpectedly started async work")
+	}
+	if m.sessionID != originalID || len(m.history) != 1 {
+		t.Fatalf("COS /rewind mutated session: id=%q history=%#v", m.sessionID, m.history)
+	}
+	if len(m.messages) == 0 || !strings.Contains(m.messages[len(m.messages)-1].Content, "not supported by the COS provider") {
+		t.Fatalf("COS /rewind did not report unsupported operation: %#v", m.messages)
+	}
+}
+
 func TestResumePickerSupportsArrowSelectionAndEnter(t *testing.T) {
 	store, err := projectstate.Open(t.TempDir())
 	if err != nil {
