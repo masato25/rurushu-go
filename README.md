@@ -74,7 +74,7 @@ go run ./cmd/rurushu --model <model-name> "summarize what I should work on"
 Rurushu can connect directly to the local Chat On Steroids Control API (no OpenAI API key required). Enable `controlApi` in Chat On Steroids, start the app, and configure the ChatGPT Project URL:
 
 ```json
-// .openzerocode/cos.json (project) or ~/.openzerocode/cos.json (global)
+// .rurushugo/cos.json (project) or ~/.rurushugo/cos.json (global)
 {
   "project": "my-project",
   "projectUrl": "https://chatgpt.com/g/g-p-.../project"

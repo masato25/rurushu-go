@@ -395,8 +395,8 @@ func (p *COSProvider) projectConfig() cosProjectConfig {
 	if home == "" {
 		home, _ = os.UserHomeDir()
 	}
-	merged := readCOSConfig(filepath.Join(home, ".openzerocode", "cos.json"))
-	local := readCOSConfig(filepath.Join(p.CWD, ".openzerocode", "cos.json"))
+	merged := readCOSConfig(filepath.Join(home, ".rurushugo", "cos.json"))
+	local := readCOSConfig(filepath.Join(p.CWD, ".rurushugo", "cos.json"))
 	if local.Project != "" {
 		merged.Project = local.Project
 	}
@@ -428,7 +428,7 @@ func (p *COSProvider) projectURL(cfg cosProjectConfig) (string, error) {
 		return cfg.ProjectURL, nil
 	}
 	if runtime.GOOS != "darwin" || cfg.Project == "" {
-		return "", errors.New("COS projectUrl is required in .openzerocode/cos.json or COS_PROJECT_URL")
+		return "", errors.New("COS projectUrl is required in .rurushugo/cos.json or COS_PROJECT_URL")
 	}
 	script := fmt.Sprintf(`tell application "Google Chrome" to get URL of every tab of every window`)
 	output, err := exec.Command("osascript", "-e", script).Output()

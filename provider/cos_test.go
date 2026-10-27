@@ -41,8 +41,9 @@ func TestCOSProjectConfigPrecedence(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	writeJSON(filepath.Join(home, ".openzerocode", "cos.json"), `{"project":"global","projectUrl":"https://global"}`)
-	writeJSON(filepath.Join(cwd, ".openzerocode", "cos.json"), `{"project":"local"}`)
+	writeJSON(filepath.Join(home, ".rurushugo", "cos.json"), `{"project":"global","projectUrl":"https://global"}`)
+	writeJSON(filepath.Join(cwd, ".rurushugo", "cos.json"), `{"project":"local"}`)
+	writeJSON(filepath.Join(cwd, ".openzerocode", "cos.json"), `{"project":"legacy-must-not-win"}`)
 	t.Setenv("COS_PROJECT_URL", "https://env")
 	p := &COSProvider{HomeDir: home, CWD: cwd}
 	cfg := p.projectConfig()
