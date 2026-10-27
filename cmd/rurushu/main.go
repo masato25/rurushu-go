@@ -110,7 +110,13 @@ func run(args []string) error {
 	case "openai-compatible", "openai":
 		prov = provider.NewOpenAICompatibleProvider(strings.TrimSpace(*baseURL), strings.TrimSpace(*apiKey))
 	case "cos", "chat-on-steroids":
-		prov = provider.NewCOSProvider(absCWD)
+		cosProvider := provider.NewCOSProvider(absCWD)
+		// The interactive TUI owns the terminal. Writing COS progress messages
+		// directly to stderr leaves those lines behind outside Bubble Tea's
+		// redraw lifecycle, so keep provider diagnostics silent here. Headless
+		// mode still uses the provider's default stderr logger.
+		cosProvider.Stderr = nil
+		prov = cosProvider
 	default:
 		return fmt.Errorf("unsupported provider %q", *providerName)
 	}
