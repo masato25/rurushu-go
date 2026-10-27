@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/masato25/rurushu-go/duel"
 )
 
@@ -93,5 +94,21 @@ func TestDuelBlockedDoesNotRing(t *testing.T) {
 	_, cmd := ui.Update(duelUpdate{done: true, result: duel.Result{Status: "blocked"}})
 	if _, ok := cmd().(tea.BatchMsg); ok {
 		t.Fatal("blocked state rang terminal bell")
+	}
+}
+
+func TestDuelTurnHeaderAndMarkdown(t *testing.T) {
+	got := renderDuelTurn(duelUpdate{role: "left", round: 32, turn: duel.Turn{Action: "continue", Summary: "**done** and `code`", Evidence: "- test passed"}}, 65)
+	plain := ansi.Strip(got)
+	for _, want := range []string{"ROUND 32", "CONTINUE", "done", "code", "Evidence", "test passed"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("missing %q in %q", want, plain)
+		}
+	}
+	if strings.Contains(plain, "**done**") {
+		t.Fatalf("markdown not rendered: %q", plain)
+	}
+	if !strings.Contains(got, "\x1b[") {
+		t.Fatalf("expected styled round header: %q", got)
 	}
 }

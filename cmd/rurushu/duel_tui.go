@@ -8,6 +8,8 @@ import (
 	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/glamour/v2"
+	"charm.land/glamour/v2/styles"
 	"charm.land/lipgloss/v2"
 	"github.com/masato25/rurushu-go/duel"
 )
@@ -95,7 +97,7 @@ func (m *duelUI) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, m.input.Focus()
 		}
-		entry := fmt.Sprintf("[%d · %s]\n%s\n%s", v.round, v.turn.Action, v.turn.Summary, v.turn.Evidence)
+		entry := renderDuelTurn(v, max(16, (m.width-3)/2))
 		if v.role == "left" {
 			m.leftLines = append(m.leftLines, entry)
 			m.left.SetContent(strings.Join(m.leftLines, "\n\n"))
@@ -145,6 +147,32 @@ func (m *duelUI) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 	return m, nil
+}
+
+func renderDuelTurn(update duelUpdate, width int) string {
+	color := "#7DAEA3"
+	if update.role == "right" {
+		color = "#8DA9E8"
+	}
+	switch update.turn.Action {
+	case "blocked":
+		color = "#E6B450"
+	case "propose_review", "agree_review":
+		color = "#A7D7C5"
+	}
+	label := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(color)).Render(fmt.Sprintf("● ROUND %02d  ·  %s", update.round, strings.ToUpper(update.turn.Action)))
+	divider := lipgloss.NewStyle().Foreground(lipgloss.Color("#515968")).Render(strings.Repeat("─", max(1, min(width-3, 42))))
+	markdown := strings.TrimSpace(update.turn.Summary)
+	if evidence := strings.TrimSpace(update.turn.Evidence); evidence != "" {
+		markdown += "\n\n**Evidence**\n\n" + evidence
+	}
+	renderer, err := glamour.NewTermRenderer(glamour.WithStyles(styles.DarkStyleConfig), glamour.WithWordWrap(max(1, width-5)))
+	if err == nil {
+		if rendered, renderErr := renderer.Render(markdown); renderErr == nil {
+			markdown = strings.TrimSpace(rendered)
+		}
+	}
+	return label + "\n" + divider + "\n" + markdown
 }
 func (m *duelUI) View() tea.View {
 	w := max(16, (m.width-3)/2)
