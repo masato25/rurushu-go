@@ -100,6 +100,10 @@ func (m *duelUI) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			} else if v.result.Status == "blocked" {
 				m.status = "等待外部條件 · 可輸入主人指令繼續"
 				m.modal = v.result.Summary
+			} else if v.result.Status == "propose_review" {
+				m.status = "RIGHT 建議驗收 · 自動輪詢已停止，可輸入主人指令繼續"
+			} else if v.result.Status == "deadline_reached" {
+				m.status = "輪詢期限已到 · 可輸入主人指令繼續"
 			} else {
 				m.status = "雙方同意，等待主人驗收：" + v.result.Summary
 			}

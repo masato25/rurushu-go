@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/masato25/rurushu-go/provider"
 )
@@ -14,6 +15,17 @@ type scripted struct {
 	calls    []string
 	requests []provider.CompletionRequest
 	outputs  []string
+}
+
+type fakeClock struct{ now time.Time }
+
+func (c *fakeClock) Now() time.Time { return c.now }
+func (c *fakeClock) After(d time.Duration) <-chan time.Time {
+	c.now = c.now.Add(d)
+	ch := make(chan time.Time, 1)
+	ch <- c.now
+	close(ch)
+	return ch
 }
 
 func (s *scripted) Stream(_ context.Context, req provider.CompletionRequest) (<-chan provider.StreamEvent, error) {
@@ -116,6 +128,238 @@ func TestRunStopsOnlyAfterBothApprove(t *testing.T) {
 	}
 }
 
+func TestRunRecurringThreeTicksProduceThreeRightDecisions(t *testing.T) {
+	start := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	clock := &fakeClock{now: start}
+	s := &scripted{outputs: []string{
+		`{"action":"plan","summary":"r1","next":"work","evidence":"e1"}`,
+		`{"action":"continue","summary":"l1","next":"again","evidence":"done1"}`,
+		`{"action":"research","summary":"r2","next":"research","evidence":"e2"}`,
+		`{"action":"continue","summary":"l2","next":"again","evidence":"done2"}`,
+		`{"action":"plan","summary":"r3","next":"work","evidence":"e3"}`,
+		`{"action":"continue","summary":"l3","next":"again","evidence":"done3"}`,
+	}}
+	var schedules []time.Time
+	res, err := RunRecurring(context.Background(), s, RecurringOptions{
+		Options:   Options{Goal: "recurring", LeftID: "left", RightID: "right"},
+		PollEvery: time.Minute,
+		Deadline:  start.Add(3 * time.Minute),
+		Clock:     clock,
+		OnSchedule: func(next time.Time) error {
+			schedules = append(schedules, next)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != "deadline_reached" || res.Rounds != 3 {
+		t.Fatalf("result=%+v", res)
+	}
+	if got := strings.Join(s.calls, ","); got != "right,left,right,left,right,left" {
+		t.Fatalf("calls=%s", got)
+	}
+	if len(schedules) != 3 {
+		t.Fatalf("schedules=%v", schedules)
+	}
+}
+
+func TestRunRecurringWaitSkipsLeftAndPollsRightAgain(t *testing.T) {
+	start := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	s := &scripted{outputs: []string{
+		`{"action":"wait","summary":"executor attempts=0","next":"check observer again","evidence":"arm window expired"}`,
+		`{"action":"propose_review","summary":"stop","next":"owner","evidence":"done"}`,
+	}}
+	res, err := RunRecurring(context.Background(), s, RecurringOptions{
+		Options:   Options{Goal: "recurring", LeftID: "left", RightID: "right"},
+		PollEvery: time.Minute,
+		Deadline:  start.Add(5 * time.Minute),
+		Clock:     &fakeClock{now: start},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != "propose_review" || res.Rounds != 1 {
+		t.Fatalf("result=%+v", res)
+	}
+	if got := strings.Join(s.calls, ","); got != "right,right" {
+		t.Fatalf("wait should skip LEFT, calls=%s", got)
+	}
+	if len(s.requests) < 2 || !strings.Contains(s.requests[1].Messages[0].Content, "executor attempts=0") || !strings.Contains(s.requests[1].Messages[0].Content, "arm window expired") {
+		t.Fatalf("wait observation not carried to next RIGHT: %+v", s.requests)
+	}
+}
+
+func TestRunRecurringWaitWaitPlanCallsLeftOnlyOnPlan(t *testing.T) {
+	start := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	s := &scripted{outputs: []string{
+		`{"action":"wait","summary":"no READY yet","next":"poll preflight","evidence":"observer running"}`,
+		`{"action":"wait","summary":"still no READY","next":"poll preflight","evidence":"observer running"}`,
+		`{"action":"plan","summary":"READY found","next":"start executor","evidence":"net positive READY_TO_SEND"}`,
+		`{"action":"continue","summary":"executor started","next":"observe result","evidence":"live run active"}`,
+		`{"action":"propose_review","summary":"stop test","next":"owner","evidence":"scenario complete"}`,
+	}}
+	res, err := RunRecurring(context.Background(), s, RecurringOptions{
+		Options:   Options{Goal: "profit", LeftID: "left", RightID: "right"},
+		PollEvery: time.Minute,
+		Deadline:  start.Add(10 * time.Minute),
+		Clock:     &fakeClock{now: start},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != "propose_review" || res.Rounds != 3 {
+		t.Fatalf("result=%+v", res)
+	}
+	if got := strings.Join(s.calls, ","); got != "right,right,right,left,right" {
+		t.Fatalf("calls=%s", got)
+	}
+}
+
+func TestRunRecurringBlockedStopsWithoutFutureTick(t *testing.T) {
+	start := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	s := &scripted{outputs: []string{
+		`{"action":"blocked","summary":"owner signature required","next":"owner must sign","evidence":"manual authorization required"}`,
+	}}
+	res, err := RunRecurring(context.Background(), s, RecurringOptions{
+		Options:   Options{Goal: "recurring", LeftID: "left", RightID: "right"},
+		PollEvery: time.Minute,
+		Deadline:  start.Add(10 * time.Minute),
+		Clock:     &fakeClock{now: start},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != "blocked" || len(s.calls) != 1 {
+		t.Fatalf("result=%+v calls=%v", res, s.calls)
+	}
+}
+
+func TestRunRecurringContinuousWaitStopsAtDeadline(t *testing.T) {
+	start := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	s := &scripted{outputs: []string{
+		`{"action":"wait","summary":"w1","next":"poll","evidence":"e1"}`,
+		`{"action":"wait","summary":"w2","next":"poll","evidence":"e2"}`,
+		`{"action":"wait","summary":"w3","next":"poll","evidence":"e3"}`,
+	}}
+	res, err := RunRecurring(context.Background(), s, RecurringOptions{
+		Options:   Options{Goal: "recurring", LeftID: "left", RightID: "right"},
+		PollEvery: time.Minute,
+		Deadline:  start.Add(3 * time.Minute),
+		Clock:     &fakeClock{now: start},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(s.calls, ",")
+	if res.Status != "deadline_reached" || res.Rounds != 3 || got != "right,right,right" {
+		t.Fatalf("result=%+v calls=%v", res, s.calls)
+	}
+}
+
+func TestRunRecurringProfitObservationE2E(t *testing.T) {
+	start := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	s := &scripted{outputs: []string{
+		`{"action":"wait","summary":"executor arm window expired attempts=0","next":"re-check preflight","evidence":"executor stopped without submission"}`,
+		`{"action":"wait","summary":"observer still running, no READY_TO_SEND","next":"re-check for net-positive READY","evidence":"preflight has no actionable candidate"}`,
+		`{"action":"plan","summary":"net-positive READY_TO_SEND appeared","next":"start one-shot executor","evidence":"gross exceeds gas and min net gate"}`,
+		`{"action":"continue","summary":"one-shot executor started","next":"observe tx outcome","evidence":"live executor armed"}`,
+		`{"action":"propose_review","summary":"scenario verified","next":"review recurring behavior","evidence":"wait transitioned to plan"}`,
+	}}
+	res, err := RunRecurring(context.Background(), s, RecurringOptions{
+		Options:   Options{Goal: "achieve profitable execution", LeftID: "left", RightID: "right"},
+		PollEvery: 30 * time.Second,
+		Deadline:  start.Add(5 * time.Minute),
+		Clock:     &fakeClock{now: start},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(s.calls, ",")
+	if res.Status != "propose_review" || got != "right,right,right,left,right" {
+		t.Fatalf("result=%+v calls=%v", res, s.calls)
+	}
+	planPrompt := s.requests[2].Messages[0].Content
+	if !strings.Contains(planPrompt, "observer still running, no READY_TO_SEND") || !strings.Contains(planPrompt, "preflight has no actionable candidate") {
+		t.Fatalf("third RIGHT lost prior observation: %s", planPrompt)
+	}
+}
+
+func TestRunRecurringResumeFromWaitUsesPersistedScheduleAndObservation(t *testing.T) {
+	start := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	clock := &fakeClock{now: start.Add(time.Minute)}
+	s := &scripted{outputs: []string{
+		`{"action":"propose_review","summary":"resume observed state","next":"owner","evidence":"prior wait context present"}`,
+	}}
+	res, err := RunRecurring(context.Background(), s, RecurringOptions{
+		Options: Options{
+			Goal:           "profit",
+			LeftID:         "left",
+			RightID:        "right",
+			InitialSummary: "Last recurring action=wait. Observation: executor attempts=0 Evidence: arm window expired",
+		},
+		PollEvery:  time.Minute,
+		Deadline:   start.Add(10 * time.Minute),
+		NextPollAt: start.Add(2 * time.Minute),
+		Clock:      clock,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != "propose_review" || !clock.Now().Equal(start.Add(2*time.Minute)) {
+		t.Fatalf("result=%+v clock=%v", res, clock.Now())
+	}
+	if len(s.requests) != 1 {
+		t.Fatalf("requests=%d", len(s.requests))
+	}
+	prompt := s.requests[0].Messages[0].Content
+	if !strings.Contains(prompt, "executor attempts=0") || !strings.Contains(prompt, "arm window expired") {
+		t.Fatalf("resume prompt lost wait observation: %s", prompt)
+	}
+}
+
+func TestRunRecurringProposeReviewStopsBeforeLeftAndFutureTicks(t *testing.T) {
+	start := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	s := &scripted{outputs: []string{
+		`{"action":"propose_review","summary":"ready","next":"owner","evidence":"tests pass"}`,
+	}}
+	res, err := RunRecurring(context.Background(), s, RecurringOptions{
+		Options:   Options{Goal: "recurring", LeftID: "left", RightID: "right"},
+		PollEvery: time.Minute,
+		Deadline:  start.Add(10 * time.Minute),
+		Clock:     &fakeClock{now: start},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != "propose_review" || res.Rounds != 0 {
+		t.Fatalf("result=%+v", res)
+	}
+	if got := strings.Join(s.calls, ","); got != "right" {
+		t.Fatalf("calls=%s", got)
+	}
+}
+
+func TestRunRecurringDeadlinePreventsNextTick(t *testing.T) {
+	start := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	s := &scripted{outputs: []string{
+		`{"action":"plan","summary":"r1","next":"work","evidence":"e1"}`,
+		`{"action":"continue","summary":"l1","next":"again","evidence":"done1"}`,
+	}}
+	res, err := RunRecurring(context.Background(), s, RecurringOptions{
+		Options:   Options{Goal: "recurring", LeftID: "left", RightID: "right"},
+		PollEvery: time.Minute,
+		Deadline:  start.Add(time.Minute),
+		Clock:     &fakeClock{now: start},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != "deadline_reached" || res.Rounds != 1 || len(s.calls) != 2 {
+		t.Fatalf("result=%+v calls=%v", res, s.calls)
+	}
+}
+
 func TestRunBlocksWithoutSpinning(t *testing.T) {
 	s := &scripted{outputs: []string{
 		`{"action":"blocked","summary":"waiting for owner authorization","next":"owner approval","evidence":"no new work"}`,
@@ -170,6 +414,14 @@ func TestRunRejectsInvalidActions(t *testing.T) {
 		}}
 		if _, err := Run(context.Background(), s, Options{Goal: "task", LeftID: "left", RightID: "right"}); err == nil || !strings.Contains(err.Error(), "invalid action") {
 			t.Fatalf("expected invalid action error, got %v", err)
+		}
+	})
+	t.Run("wait remains recurring-only", func(t *testing.T) {
+		s := &scripted{outputs: []string{
+			`{"action":"wait","summary":"temporary condition","next":"poll later","evidence":"none"}`,
+		}}
+		if _, err := Run(context.Background(), s, Options{Goal: "task", LeftID: "left", RightID: "right"}); err == nil || !strings.Contains(err.Error(), "invalid action") {
+			t.Fatalf("one-shot accepted recurring-only wait action: %v", err)
 		}
 	})
 }

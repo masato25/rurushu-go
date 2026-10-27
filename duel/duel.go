@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/masato25/rurushu-go/provider"
 )
@@ -30,6 +31,30 @@ type Result struct {
 	Rounds  int
 	Status  string
 	Summary string
+}
+
+// Clock is the minimal scheduler surface used by recurring duels. Tests can
+// supply a deterministic fake without sleeping in wall-clock time.
+type Clock interface {
+	Now() time.Time
+	After(time.Duration) <-chan time.Time
+}
+
+type realClock struct{}
+
+func (realClock) Now() time.Time                         { return time.Now() }
+func (realClock) After(d time.Duration) <-chan time.Time { return time.After(d) }
+
+// RecurringOptions runs one RIGHT decision per poll tick. RIGHT plan/research
+// decisions are executed by LEFT in the same tick; wait schedules another
+// RIGHT-only observation tick; blocked/propose_review stop for owner input.
+type RecurringOptions struct {
+	Options
+	PollEvery  time.Duration
+	Deadline   time.Time
+	NextPollAt time.Time
+	Clock      Clock
+	OnSchedule func(next time.Time) error
 }
 
 func call(ctx context.Context, s Streamer, id, prompt string) (Turn, error) {
@@ -181,6 +206,121 @@ Reply ONLY JSON: {"action":"continue|blocked|agree_review","summary":"work compl
 			return result, nil
 		}
 		previous = fmt.Sprintf("Round %d: RIGHT: %s. LEFT: %s. Evidence: %s. LEFT next: %s", round, right.Summary, left.Summary, left.Evidence, left.Next)
+	}
+}
+
+// RunRecurring executes at most one RIGHT/LEFT work cycle per poll tick until
+// the persisted deadline is reached or RIGHT asks to stop for owner input.
+func RunRecurring(ctx context.Context, s Streamer, o RecurringOptions) (Result, error) {
+	if strings.TrimSpace(o.Goal) == "" || o.LeftID == "" || o.RightID == "" || o.LeftID == o.RightID {
+		return Result{}, errors.New("a goal and two distinct session IDs are required")
+	}
+	if o.PollEvery <= 0 {
+		return Result{}, errors.New("poll interval must be positive")
+	}
+	clock := o.Clock
+	if clock == nil {
+		clock = realClock{}
+	}
+	if o.Deadline.IsZero() {
+		return Result{}, errors.New("recurring duel requires a deadline")
+	}
+
+	result := Result{Status: "running"}
+	previous := strings.TrimSpace(o.InitialSummary)
+	if previous == "" {
+		previous = "No work yet."
+	}
+	next := o.NextPollAt
+	if next.IsZero() {
+		next = clock.Now()
+	}
+
+	for round := 1; ; round++ {
+		now := clock.Now()
+		if !next.Before(o.Deadline) || !now.Before(o.Deadline) {
+			result.Status = "deadline_reached"
+			return result, nil
+		}
+		if wait := next.Sub(now); wait > 0 {
+			select {
+			case <-ctx.Done():
+				return result, ctx.Err()
+			case <-clock.After(wait):
+			}
+		}
+		if !clock.Now().Before(o.Deadline) {
+			result.Status = "deadline_reached"
+			return result, nil
+		}
+
+		ownerNotes := drainInstructions(o.Instructions)
+		rightPrompt := fmt.Sprintf(`You are RIGHT (decision/review). Goal: %s
+Owner instructions (highest task priority): %s
+Current evidence from LEFT: %s
+Decide the next concrete, testable work step. Use action=wait when no LEFT work is useful now but a future poll may observe a changed market/RPC/process condition; wait must include the current observation/evidence and what the next poll should re-check. Use blocked only when progress requires owner authorization, a secret/manual action, or another external condition this loop cannot independently resolve. If stuck on research, research on the web yourself using available browsing tools; use action=research when LEFT should perform external research. If you believe the goal is satisfied, action=propose_review. Never claim an online search unless you actually performed it.
+Reply ONLY JSON: {"action":"plan|research|wait|blocked|propose_review","summary":"current concise summary or observation","next":"specific instructions, next observation target, or unblock condition","evidence":"test evidence or caveats"}`, o.Goal, ownerNotes, previous)
+		right, err := call(ctx, s, o.RightID, rightPrompt)
+		if err != nil {
+			return result, fmt.Errorf("right round %d: %w", round, err)
+		}
+		if right.Action != "plan" && right.Action != "research" && right.Action != "wait" && right.Action != "blocked" && right.Action != "propose_review" {
+			return result, fmt.Errorf("right round %d: invalid action %q", round, right.Action)
+		}
+		if o.OnTurn != nil {
+			if err := o.OnTurn("right", round, right); err != nil {
+				return result, err
+			}
+		}
+		if right.Action == "blocked" || right.Action == "propose_review" {
+			result.Status = right.Action
+			result.Summary = right.Summary
+			return result, nil
+		}
+		if right.Action == "wait" {
+			result.Rounds = round
+			result.Summary = right.Summary
+			previous = fmt.Sprintf("Round %d RIGHT observation: %s. Evidence: %s. Next observation: %s", round, right.Summary, right.Evidence, right.Next)
+			next = clock.Now().Add(o.PollEvery)
+			if o.OnSchedule != nil {
+				if err := o.OnSchedule(next); err != nil {
+					return result, err
+				}
+			}
+			continue
+		}
+
+		ownerNotes = strings.TrimSpace(ownerNotes + "\n" + drainInstructions(o.Instructions))
+		leftPrompt := fmt.Sprintf(`You are LEFT (implementation/execution). Goal: %s
+Owner instructions (highest task priority): %s
+RIGHT's assessment: %s
+RIGHT's action: %s
+RIGHT's requested next step: %s
+RIGHT's evidence: %s
+Execute or investigate using available tools, verify results, and report facts. If action is research, collect current online sources if browser/search tools are available; never invent citations. If RIGHT says blocked, independently check whether any actionable work remains; reply action=blocked if both sides must wait for an external condition, without repeating tests or making unnecessary requests. If action is propose_review, independently verify completion, and action=agree_review only if genuinely ready; otherwise action=continue.
+Reply ONLY JSON: {"action":"continue|blocked|agree_review","summary":"work completed and remaining issues","next":"what RIGHT should consider or unblock condition","evidence":"tests or URLs actually checked"}`, o.Goal, ownerNotes, right.Summary, right.Action, right.Next, right.Evidence)
+		left, err := call(ctx, s, o.LeftID, leftPrompt)
+		if err != nil {
+			return result, fmt.Errorf("left round %d: %w", round, err)
+		}
+		if left.Action != "continue" && left.Action != "blocked" && left.Action != "agree_review" {
+			return result, fmt.Errorf("left round %d: invalid action %q", round, left.Action)
+		}
+		if o.OnTurn != nil {
+			if err := o.OnTurn("left", round, left); err != nil {
+				return result, err
+			}
+		}
+		result.Rounds = round
+		result.Summary = left.Summary
+		previous = fmt.Sprintf("Round %d: RIGHT: %s. LEFT: %s. Evidence: %s. LEFT next: %s", round, right.Summary, left.Summary, left.Evidence, left.Next)
+
+		next = clock.Now().Add(o.PollEvery)
+		if o.OnSchedule != nil {
+			if err := o.OnSchedule(next); err != nil {
+				return result, err
+			}
+		}
 	}
 }
 

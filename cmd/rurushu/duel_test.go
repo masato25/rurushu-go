@@ -230,13 +230,21 @@ func TestDuelStatePersistence(t *testing.T) {
 
 func TestLoadDuelStatePreservesResumeContext(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "duel-state.json")
+	started := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
 	want := duelState{
-		Goal:    "continue improving",
-		LeftID:  "left-session",
-		RightID: "right-session",
-		Rounds:  7,
-		Status:  "running",
-		Summary: "round seven uncovered an edge case",
+		Goal:            "continue improving",
+		LeftID:          "left-session",
+		RightID:         "right-session",
+		Mode:            "recurring",
+		PollEvery:       "30s",
+		StartedAt:       started,
+		Deadline:        started.Add(10 * time.Minute),
+		NextPollAt:      started.Add(90 * time.Second),
+		LastAction:      "wait",
+		LastObservation: "executor attempts=0 Evidence: arm window expired",
+		Rounds:          7,
+		Status:          "interrupted",
+		Summary:         "round seven uncovered an edge case",
 	}
 	if err := saveDuelState(path, want); err != nil {
 		t.Fatal(err)
@@ -247,6 +255,81 @@ func TestLoadDuelStatePreservesResumeContext(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("resume state mismatch: got %+v want %+v", got, want)
+	}
+}
+
+func TestResolveDuelStateResumeDoesNotResetRecurringDeadline(t *testing.T) {
+	dir := t.TempDir()
+	store, err := projectstate.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	left, err := store.StartSession("chatgpt-web", "cos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	right, err := store.StartSession("chatgpt-web", "cos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	want := duelState{
+		Goal:            "recurring resume",
+		LeftID:          left.ID,
+		RightID:         right.ID,
+		Mode:            "recurring",
+		PollEvery:       "30s",
+		StartedAt:       started,
+		Deadline:        started.Add(10 * time.Minute),
+		NextPollAt:      started.Add(2 * time.Minute),
+		LastAction:      "wait",
+		LastObservation: "observer still running Evidence: no READY_TO_SEND",
+		Rounds:          3,
+		Status:          "interrupted",
+		Summary:         "saved evidence",
+	}
+	path := filepath.Join(store.Dir, "duel-state.json")
+	if err := saveDuelState(path, want); err != nil {
+		t.Fatal(err)
+	}
+	got, reused, err := resolveDuelState(store, path, "", true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reused || !reflect.DeepEqual(got, want) {
+		t.Fatalf("resume changed recurring schedule: got=%+v reused=%v want=%+v", got, reused, want)
+	}
+}
+
+func TestRecurringInitialSummaryIncludesPersistedObservation(t *testing.T) {
+	state := duelState{
+		Mode:            "recurring",
+		Summary:         "short summary",
+		LastAction:      "wait",
+		LastObservation: "executor attempts=0 Evidence: arm window expired",
+	}
+	got := recurringInitialSummary(state)
+	if !strings.Contains(got, "action=wait") || !strings.Contains(got, "attempts=0") || !strings.Contains(got, "arm window expired") {
+		t.Fatalf("resume summary lost recurring observation: %q", got)
+	}
+}
+
+func TestApplyDuelTurnStateRecurringCountsRightTickAndPersistsObservation(t *testing.T) {
+	state := duelState{Mode: "recurring", Rounds: 4}
+	shown := applyDuelTurnState(&state, "right", duel.Turn{
+		Action:   "wait",
+		Summary:  "observer has no READY_TO_SEND",
+		Evidence: "preflight still running",
+	})
+	if shown != 5 || state.Rounds != 5 || state.LastAction != "wait" {
+		t.Fatalf("state=%+v shown=%d", state, shown)
+	}
+	if !strings.Contains(state.LastObservation, "no READY_TO_SEND") || !strings.Contains(state.LastObservation, "preflight still running") {
+		t.Fatalf("observation=%q", state.LastObservation)
+	}
+	shown = applyDuelTurnState(&state, "left", duel.Turn{Action: "continue", Summary: "executor started"})
+	if shown != 5 || state.Rounds != 5 || state.Summary != "executor started" {
+		t.Fatalf("LEFT should not double-count recurring tick: state=%+v shown=%d", state, shown)
 	}
 }
 

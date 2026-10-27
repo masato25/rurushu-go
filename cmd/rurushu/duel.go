@@ -22,13 +22,20 @@ import (
 )
 
 type duelState struct {
-	Goal       string      `json:"goal"`
-	LeftID     string      `json:"left_session"`
-	RightID    string      `json:"right_session"`
-	Rounds     int         `json:"rounds"`
-	RoundTimes []time.Time `json:"round_times,omitempty"`
-	Status     string      `json:"status"`
-	Summary    string      `json:"summary"`
+	Goal            string      `json:"goal"`
+	LeftID          string      `json:"left_session"`
+	RightID         string      `json:"right_session"`
+	Mode            string      `json:"mode,omitempty"`
+	PollEvery       string      `json:"poll_every,omitempty"`
+	StartedAt       time.Time   `json:"started_at,omitempty"`
+	Deadline        time.Time   `json:"deadline,omitempty"`
+	NextPollAt      time.Time   `json:"next_poll_at,omitempty"`
+	LastAction      string      `json:"last_action,omitempty"`
+	LastObservation string      `json:"last_observation,omitempty"`
+	Rounds          int         `json:"rounds"`
+	RoundTimes      []time.Time `json:"round_times,omitempty"`
+	Status          string      `json:"status"`
+	Summary         string      `json:"summary"`
 }
 
 type duelLockMeta struct {
@@ -200,6 +207,34 @@ func ensureRoundTime(state *duelState, round int, now time.Time) time.Time {
 	return state.RoundTimes[round-1]
 }
 
+func recurringInitialSummary(state duelState) string {
+	if state.Mode == "recurring" && strings.TrimSpace(state.LastObservation) != "" {
+		return fmt.Sprintf("Last recurring action=%s. Observation: %s", state.LastAction, state.LastObservation)
+	}
+	return state.Summary
+}
+
+func applyDuelTurnState(state *duelState, role string, turn duel.Turn) int {
+	shownRound := state.Rounds + 1
+	if state.Mode == "recurring" && role == "right" {
+		state.Rounds++
+		state.LastAction = turn.Action
+		state.LastObservation = strings.TrimSpace(turn.Summary + " Evidence: " + turn.Evidence)
+		state.Summary = turn.Summary
+		return state.Rounds
+	}
+	if state.Mode != "recurring" && role == "left" {
+		state.Rounds++
+		state.Summary = turn.Summary
+		return state.Rounds
+	}
+	if state.Mode == "recurring" && role == "left" {
+		state.Summary = turn.Summary
+		return state.Rounds
+	}
+	return shownRound
+}
+
 func resolveDuelState(store *projectstate.Store, path, requestedGoal string, resume, newDuel bool) (duelState, bool, error) {
 	if resume && newDuel {
 		return duelState{}, false, errors.New("--resume and --new cannot be combined")
@@ -261,11 +296,25 @@ func runDuel(args []string) error {
 	goal := fs.String("goal", "", "task goal for both agents")
 	resume := fs.Bool("resume", false, "resume existing left/right COS sessions")
 	newDuel := fs.Bool("new", false, "start a new duel with a fresh LEFT/RIGHT session pair")
+	runFor := fs.Duration("run-for", 0, "run a recurring duel for this duration (for example 10m)")
+	pollEvery := fs.Duration("poll-every", 30*time.Second, "recurring duel interval (for example 30s)")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
 		}
 		return err
+	}
+	pollEverySet := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "poll-every" {
+			pollEverySet = true
+		}
+	})
+	if *runFor < 0 || *pollEvery <= 0 {
+		return errors.New("--run-for cannot be negative and --poll-every must be positive")
+	}
+	if *runFor == 0 && pollEverySet {
+		return errors.New("--poll-every requires --run-for when creating a recurring duel")
 	}
 	abs, err := filepath.Abs(*cwd)
 	if err != nil {
@@ -289,6 +338,24 @@ func runDuel(args []string) error {
 	if err != nil {
 		return err
 	}
+	now := time.Now()
+	if reused && state.Mode == "recurring" {
+		if *runFor > 0 {
+			return errors.New("recurring duel already has a persisted deadline; resume without --run-for so the original deadline is preserved")
+		}
+		if pollEverySet {
+			return errors.New("recurring duel already has a persisted poll interval; resume without --poll-every")
+		}
+	} else if *runFor > 0 {
+		state.Mode = "recurring"
+		state.PollEvery = pollEvery.String()
+		state.StartedAt = now
+		state.Deadline = now.Add(*runFor)
+		state.NextPollAt = now
+		if err = saveDuelState(path, state); err != nil {
+			return err
+		}
+	}
 	if reused {
 		state.Status = "running"
 		if err = saveDuelState(path, state); err != nil {
@@ -308,17 +375,12 @@ func runDuel(args []string) error {
 	updates := make(chan duelUpdate, 128)
 	run := func() {
 		stateMu.Lock()
-		runGoal, runLeftID, runRightID, runSummary := state.Goal, state.LeftID, state.RightID, state.Summary
+		runGoal, runLeftID, runRightID, runSummary := state.Goal, state.LeftID, state.RightID, recurringInitialSummary(state)
 		stateMu.Unlock()
-		result, err := duel.Run(ctx, p, duel.Options{Goal: runGoal, LeftID: runLeftID, RightID: runRightID, InitialSummary: runSummary, Instructions: instructions, OnTurn: func(role string, round int, turn duel.Turn) error {
+		baseOptions := duel.Options{Goal: runGoal, LeftID: runLeftID, RightID: runRightID, InitialSummary: runSummary, Instructions: instructions, OnTurn: func(role string, round int, turn duel.Turn) error {
 			stateMu.Lock()
 			defer stateMu.Unlock()
-			shownRound := state.Rounds + 1
-			if role == "left" {
-				state.Rounds++
-				state.Summary = turn.Summary
-				shownRound = state.Rounds
-			}
+			shownRound := applyDuelTurnState(&state, role, turn)
 			roundTime := ensureRoundTime(&state, shownRound, time.Now())
 			if err := saveDuelState(path, state); err != nil {
 				return err
@@ -329,7 +391,36 @@ func runDuel(args []string) error {
 				return ctx.Err()
 			}
 			return nil
-		}})
+		}}
+		var result duel.Result
+		var err error
+		stateMu.Lock()
+		mode, pollEveryText, deadline, nextPollAt := state.Mode, state.PollEvery, state.Deadline, state.NextPollAt
+		stateMu.Unlock()
+		if mode == "recurring" {
+			interval, parseErr := time.ParseDuration(pollEveryText)
+			if parseErr != nil || interval <= 0 {
+				if parseErr == nil {
+					parseErr = errors.New("interval must be positive")
+				}
+				err = fmt.Errorf("invalid persisted recurring poll interval %q: %w", pollEveryText, parseErr)
+			} else {
+				result, err = duel.RunRecurring(ctx, p, duel.RecurringOptions{
+					Options:    baseOptions,
+					PollEvery:  interval,
+					Deadline:   deadline,
+					NextPollAt: nextPollAt,
+					OnSchedule: func(next time.Time) error {
+						stateMu.Lock()
+						defer stateMu.Unlock()
+						state.NextPollAt = next
+						return saveDuelState(path, state)
+					},
+				})
+			}
+		} else {
+			result, err = duel.Run(ctx, p, baseOptions)
+		}
 		stateMu.Lock()
 		applyDuelResult(&state, result, err)
 		if saveErr := saveDuelState(path, state); saveErr != nil && err == nil {
