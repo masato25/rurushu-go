@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -98,9 +99,10 @@ func TestDuelBlockedDoesNotRing(t *testing.T) {
 }
 
 func TestDuelTurnHeaderAndMarkdown(t *testing.T) {
-	got := renderDuelTurn(duelUpdate{role: "left", round: 32, turn: duel.Turn{Action: "continue", Summary: "**done** and `code`", Evidence: "- test passed"}}, 65)
+	localTime := time.Date(2026, 10, 27, 15, 42, 0, 0, time.Local)
+	got := renderDuelTurn(duelUpdate{role: "left", round: 32, roundTime: localTime, turn: duel.Turn{Action: "continue", Summary: "**done** and `code`", Evidence: "- test passed"}}, 65)
 	plain := ansi.Strip(got)
-	for _, want := range []string{"ROUND 32", "CONTINUE", "done", "code", "Evidence", "test passed"} {
+	for _, want := range []string{"ROUND 32", "2026-10-27 15:42", "CONTINUE", "done", "code", "Evidence", "test passed"} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("missing %q in %q", want, plain)
 		}
@@ -110,5 +112,12 @@ func TestDuelTurnHeaderAndMarkdown(t *testing.T) {
 	}
 	if !strings.Contains(got, "\x1b[") {
 		t.Fatalf("expected styled round header: %q", got)
+	}
+}
+
+func TestDuelTurnHeaderSupportsLegacyRoundWithoutTimestamp(t *testing.T) {
+	got := ansi.Strip(renderDuelTurn(duelUpdate{role: "left", round: 7, turn: duel.Turn{Action: "continue", Summary: "legacy"}}, 65))
+	if !strings.Contains(got, "ROUND 07") || strings.Contains(got, "0001-") {
+		t.Fatalf("legacy round header=%q", got)
 	}
 }

@@ -22,12 +22,13 @@ import (
 )
 
 type duelState struct {
-	Goal    string `json:"goal"`
-	LeftID  string `json:"left_session"`
-	RightID string `json:"right_session"`
-	Rounds  int    `json:"rounds"`
-	Status  string `json:"status"`
-	Summary string `json:"summary"`
+	Goal       string      `json:"goal"`
+	LeftID     string      `json:"left_session"`
+	RightID    string      `json:"right_session"`
+	Rounds     int         `json:"rounds"`
+	RoundTimes []time.Time `json:"round_times,omitempty"`
+	Status     string      `json:"status"`
+	Summary    string      `json:"summary"`
 }
 
 type duelLockMeta struct {
@@ -186,6 +187,19 @@ func saveDuelState(path string, state duelState) error {
 	return os.Rename(tmp.Name(), path)
 }
 
+func ensureRoundTime(state *duelState, round int, now time.Time) time.Time {
+	if round <= 0 {
+		return time.Time{}
+	}
+	for len(state.RoundTimes) < round {
+		state.RoundTimes = append(state.RoundTimes, time.Time{})
+	}
+	if state.RoundTimes[round-1].IsZero() {
+		state.RoundTimes[round-1] = now
+	}
+	return state.RoundTimes[round-1]
+}
+
 func resolveDuelState(store *projectstate.Store, path, requestedGoal string, resume, newDuel bool) (duelState, bool, error) {
 	if resume && newDuel {
 		return duelState{}, false, errors.New("--resume and --new cannot be combined")
@@ -299,19 +313,18 @@ func runDuel(args []string) error {
 		result, err := duel.Run(ctx, p, duel.Options{Goal: runGoal, LeftID: runLeftID, RightID: runRightID, InitialSummary: runSummary, Instructions: instructions, OnTurn: func(role string, round int, turn duel.Turn) error {
 			stateMu.Lock()
 			defer stateMu.Unlock()
+			shownRound := state.Rounds + 1
 			if role == "left" {
 				state.Rounds++
 				state.Summary = turn.Summary
+				shownRound = state.Rounds
 			}
+			roundTime := ensureRoundTime(&state, shownRound, time.Now())
 			if err := saveDuelState(path, state); err != nil {
 				return err
 			}
-			shownRound := state.Rounds
-			if role == "right" {
-				shownRound++
-			}
 			select {
-			case updates <- duelUpdate{role: role, round: shownRound, turn: turn}:
+			case updates <- duelUpdate{role: role, round: shownRound, roundTime: roundTime, turn: turn}:
 			case <-ctx.Done():
 				return ctx.Err()
 			}

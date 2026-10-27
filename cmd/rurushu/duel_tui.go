@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/viewport"
@@ -15,12 +16,13 @@ import (
 )
 
 type duelUpdate struct {
-	role   string
-	round  int
-	turn   duel.Turn
-	err    error
-	done   bool
-	result duel.Result
+	role      string
+	round     int
+	roundTime time.Time
+	turn      duel.Turn
+	err       error
+	done      bool
+	result    duel.Result
 }
 type duelUI struct {
 	width, height         int
@@ -160,7 +162,11 @@ func renderDuelTurn(update duelUpdate, width int) string {
 	case "propose_review", "agree_review":
 		color = "#A7D7C5"
 	}
-	label := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(color)).Render(fmt.Sprintf("● ROUND %02d  ·  %s", update.round, strings.ToUpper(update.turn.Action)))
+	roundLabel := fmt.Sprintf("● ROUND %02d", update.round)
+	if !update.roundTime.IsZero() {
+		roundLabel += " · " + update.roundTime.In(time.Local).Format("2006-01-02 15:04")
+	}
+	label := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(color)).Render(roundLabel + "  ·  " + strings.ToUpper(update.turn.Action))
 	divider := lipgloss.NewStyle().Foreground(lipgloss.Color("#515968")).Render(strings.Repeat("─", max(1, min(width-3, 42))))
 	markdown := strings.TrimSpace(update.turn.Summary)
 	if evidence := strings.TrimSpace(update.turn.Evidence); evidence != "" {

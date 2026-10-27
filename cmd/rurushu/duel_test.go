@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -149,7 +150,7 @@ func TestResolveDuelStateReusesExistingPairByDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reused || got != want {
+	if !reused || !reflect.DeepEqual(got, want) {
 		t.Fatalf("got=%+v reused=%v want=%+v", got, reused, want)
 	}
 	if len(after) != len(before) {
@@ -206,9 +207,17 @@ func TestResolveDuelStateRejectsResumeAndNew(t *testing.T) {
 }
 func TestDuelStatePersistence(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "duel-state.json")
-	want := duelState{Goal: "goal", LeftID: "l", RightID: "r", Rounds: 3}
+	wantTime := time.Date(2026, 10, 27, 15, 42, 0, 0, time.FixedZone("TST", 8*60*60))
+	want := duelState{Goal: "goal", LeftID: "l", RightID: "r", Rounds: 3, RoundTimes: []time.Time{wantTime}}
 	if err := saveDuelState(path, want); err != nil {
 		t.Fatal(err)
+	}
+	got, err := loadDuelState(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.RoundTimes) != 1 || !got.RoundTimes[0].Equal(wantTime) {
+		t.Fatalf("round timestamp did not persist: got=%v want=%v", got.RoundTimes, wantTime)
 	}
 	info, err := os.Stat(path)
 	if err != nil {
@@ -236,8 +245,35 @@ func TestLoadDuelStatePreservesResumeContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("resume state mismatch: got %+v want %+v", got, want)
+	}
+}
+
+func TestEnsureRoundTimePreservesExistingTimestampAcrossResume(t *testing.T) {
+	first := time.Date(2026, 10, 27, 15, 42, 0, 0, time.FixedZone("TST", 8*60*60))
+	later := first.Add(2 * time.Hour)
+	state := duelState{}
+	if got := ensureRoundTime(&state, 1, first); !got.Equal(first) {
+		t.Fatalf("first timestamp=%v want=%v", got, first)
+	}
+	if got := ensureRoundTime(&state, 1, later); !got.Equal(first) {
+		t.Fatalf("timestamp drifted on resume: got=%v want=%v", got, first)
+	}
+}
+
+func TestLoadLegacyDuelStateWithoutRoundTimes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "duel-state.json")
+	legacy := `{"goal":"legacy","left_session":"left","right_session":"right","rounds":4,"status":"interrupted","summary":"saved"}`
+	if err := os.WriteFile(path, []byte(legacy), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := loadDuelState(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Rounds != 4 || len(got.RoundTimes) != 0 {
+		t.Fatalf("legacy state changed unexpectedly: %+v", got)
 	}
 }
 
