@@ -43,6 +43,9 @@ func main() {
 }
 
 func run(args []string) error {
+	if len(args) > 0 && args[0] == "handoff" {
+		return runHandoff(args[1:])
+	}
 	if len(args) > 0 && args[0] == "duel" {
 		return runDuel(args[1:])
 	}

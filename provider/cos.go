@@ -48,6 +48,30 @@ func (p *COSProvider) ListModels(context.Context) ([]string, error) {
 	return []string{"chatgpt-web", "cos"}, nil
 }
 
+// CompactResume requests COS's native in-place conversation handoff for an
+// existing Rurushu session. It never creates a new remote session.
+func (p *COSProvider) CompactResume(ctx context.Context, localID string) error {
+	if strings.TrimSpace(localID) == "" {
+		return errors.New("local session id is required")
+	}
+	remote := p.storedSession(localID)
+	if remote == "" {
+		return fmt.Errorf("session %s has no COS mapping; refusing to create a session", localID)
+	}
+	baseURL, token, err := p.credentials()
+	if err != nil {
+		return err
+	}
+	status, body, err := p.request(ctx, http.MethodPost, baseURL+"/v1/sessions/"+url.PathEscape(remote)+"/compact-resume", token, map[string]any{})
+	if err != nil {
+		return err
+	}
+	if status != http.StatusAccepted {
+		return fmt.Errorf("COS compact-resume refused (%d): %s", status, strings.TrimSpace(body))
+	}
+	return nil
+}
+
 type cosProjectConfig struct {
 	Project    string `json:"project"`
 	ProjectURL string `json:"projectUrl"`
@@ -115,6 +139,14 @@ func (p *COSProvider) Stream(ctx context.Context, req CompletionRequest) (<-chan
 
 func (p *COSProvider) runStream(ctx context.Context, out chan<- StreamEvent, baseURL, token, sessionID, prompt string, alreadySubmitted bool) {
 	defer close(out)
+	// COS retains the same session ID across Compact & Resume. Never submit a
+	// follow-up into its source chat while the rebind transaction is in flight.
+	if !alreadySubmitted {
+		if err := p.waitForHandoff(ctx, baseURL, token, sessionID); err != nil {
+			p.emitError(out, err)
+			return
+		}
+	}
 	nextFrom := 0
 	inputID := randomID()
 	if !alreadySubmitted {
@@ -225,6 +257,38 @@ func (p *COSProvider) runStream(ctx context.Context, out chan<- StreamEvent, bas
 		if time.Since(lastActivity) > cosIdleTimeout {
 			p.emitError(out, errors.New("timeout waiting for Chat On Steroids generation"))
 			return
+		}
+	}
+}
+
+func (p *COSProvider) waitForHandoff(ctx context.Context, baseURL, token, sessionID string) error {
+	deadline := time.NewTimer(10 * time.Minute)
+	defer deadline.Stop()
+	for {
+		var state struct {
+			Live *struct {
+				Job *struct {
+					Stage string `json:"stage"`
+					Busy  bool   `json:"busy"`
+				} `json:"job"`
+			} `json:"live"`
+		}
+		err := p.getJSON(ctx, baseURL+"/v1/sessions/"+url.PathEscape(sessionID)+"?live=1", token, &state)
+		if err != nil {
+			return fmt.Errorf("cannot verify COS handoff state; refusing unverified send: %w", err)
+		}
+		if state.Live == nil || state.Live.Job == nil || !state.Live.Job.Busy {
+			if state.Live != nil && state.Live.Job != nil && state.Live.Job.Stage == "failed" {
+				return errors.New("COS Compact & Resume failed; refusing automatic replay")
+			}
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline.C:
+			return errors.New("COS Compact & Resume remains in progress after 10 minutes; follow-up not sent")
+		case <-time.After(2 * time.Second):
 		}
 	}
 }

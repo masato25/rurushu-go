@@ -96,7 +96,7 @@ func (m *duelUI) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			alert := v.err == nil && v.result.Status == "owner_review" && !m.stopped
 			m.stopped = true
 			if v.err != nil {
-				m.status = "停止：" + v.err.Error()
+				m.status = "停止：" + v.err.Error() + " · 可直接輸入指令或按 Ctrl+R 重試"
 			} else if v.result.Status == "blocked" {
 				m.status = "等待外部條件 · 可輸入主人指令繼續"
 				m.modal = v.result.Summary

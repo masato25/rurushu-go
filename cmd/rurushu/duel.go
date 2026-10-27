@@ -36,6 +36,7 @@ type duelState struct {
 	RoundTimes      []time.Time `json:"round_times,omitempty"`
 	Status          string      `json:"status"`
 	Summary         string      `json:"summary"`
+	LastError       string      `json:"last_error,omitempty"`
 }
 
 type duelLockMeta struct {
@@ -142,13 +143,16 @@ func applyDuelResult(state *duelState, result duel.Result, runErr error) {
 	}
 	if runErr == nil {
 		state.Status = result.Status
+		state.LastError = ""
 		return
 	}
 	if errors.Is(runErr, context.Canceled) {
 		state.Status = "interrupted"
+		state.LastError = ""
 		return
 	}
 	state.Status = "error"
+	state.LastError = runErr.Error()
 }
 
 func loadDuelState(path string) (duelState, error) {
@@ -324,8 +328,9 @@ Resume:
   Press Ctrl+C to interrupt safely. From the same workspace, run:
     rurushu duel --resume
 
-  Resume keeps the original deadline and next poll schedule. Do not pass
-  --run-for or --poll-every again when resuming an existing recurring duel.
+  Resume without schedule flags keeps the original deadline and next poll.
+  With --run-for, extend the deadline to at least now + duration (never shorten).
+  With --poll-every, replace the interval and start the next poll now.
 
 Process lifetime:
   This MVP is not a daemon or system service. The rurushu process must remain
@@ -341,16 +346,19 @@ Options:`)
 		}
 		return err
 	}
-	pollEverySet := false
+	pollEverySet, runForSet := false, false
 	fs.Visit(func(f *flag.Flag) {
 		if f.Name == "poll-every" {
 			pollEverySet = true
+		}
+		if f.Name == "run-for" {
+			runForSet = true
 		}
 	})
 	if *runFor < 0 || *pollEvery <= 0 {
 		return errors.New("--run-for cannot be negative and --poll-every must be positive")
 	}
-	if *runFor == 0 && pollEverySet {
+	if *runFor == 0 && pollEverySet && !*resume {
 		return errors.New("--poll-every requires --run-for when creating a recurring duel")
 	}
 	abs, err := filepath.Abs(*cwd)
@@ -377,11 +385,13 @@ Options:`)
 	}
 	now := time.Now()
 	if reused && state.Mode == "recurring" {
-		if *runFor > 0 {
-			return errors.New("recurring duel already has a persisted deadline; resume without --run-for so the original deadline is preserved")
+		if err := updateRecurringSchedule(&state, now, *runFor, runForSet, *pollEvery, pollEverySet); err != nil {
+			return err
 		}
-		if pollEverySet {
-			return errors.New("recurring duel already has a persisted poll interval; resume without --poll-every")
+		if runForSet || pollEverySet {
+			if err = saveDuelState(path, state); err != nil {
+				return err
+			}
 		}
 	} else if *runFor > 0 {
 		state.Mode = "recurring"
@@ -395,6 +405,7 @@ Options:`)
 	}
 	if reused {
 		state.Status = "running"
+		state.LastError = ""
 		if err = saveDuelState(path, state); err != nil {
 			return err
 		}
@@ -481,4 +492,23 @@ Options:`)
 	ui := newDuelUI(instructions, updates, run, cancelAndPersist, state.LeftID, state.RightID)
 	_, err = tea.NewProgram(ui).Run()
 	return err
+}
+
+func updateRecurringSchedule(state *duelState, now time.Time, runFor time.Duration, runForSet bool, pollEvery time.Duration, pollEverySet bool) error {
+	if runForSet {
+		if runFor <= 0 {
+			return errors.New("--run-for must be positive when overriding a recurring duel deadline")
+		}
+		if deadline := now.Add(runFor); deadline.After(state.Deadline) {
+			state.Deadline = deadline
+		}
+	}
+	if pollEverySet {
+		if pollEvery <= 0 {
+			return errors.New("--poll-every must be positive")
+		}
+		state.PollEvery = pollEvery.String()
+		state.NextPollAt = now
+	}
+	return nil
 }

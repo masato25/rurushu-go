@@ -50,7 +50,7 @@ func TestDuelHelpExplainsRecurringLifecycle(t *testing.T) {
 		"plan/research",
 		"rurushu duel --new",
 		"rurushu duel --resume",
-		"Do not pass",
+		"never shorten",
 		"not a daemon or system service",
 	} {
 		if !strings.Contains(got, want) {
@@ -339,6 +339,27 @@ func TestResolveDuelStateResumeDoesNotResetRecurringDeadline(t *testing.T) {
 	}
 }
 
+func TestUpdateRecurringScheduleOnResume(t *testing.T) {
+	now := time.Date(2026, 10, 28, 1, 0, 0, 0, time.UTC)
+	original := duelState{Mode: "recurring", PollEvery: "30s", Deadline: now.Add(time.Hour), NextPollAt: now.Add(5 * time.Minute)}
+	state := original
+	if err := updateRecurringSchedule(&state, now, 0, false, 0, false); err != nil || !reflect.DeepEqual(state, original) {
+		t.Fatalf("ordinary resume changed schedule: %+v %v", state, err)
+	}
+	if err := updateRecurringSchedule(&state, now, 610*time.Minute, true, 30*time.Minute, true); err != nil {
+		t.Fatal(err)
+	}
+	if !state.Deadline.Equal(now.Add(610*time.Minute)) || state.PollEvery != "30m0s" || !state.NextPollAt.Equal(now) {
+		t.Fatalf("unexpected renewed schedule: %+v", state)
+	}
+	if err := updateRecurringSchedule(&state, now, time.Minute, true, 0, false); err != nil || !state.Deadline.Equal(now.Add(610*time.Minute)) {
+		t.Fatalf("resume shortened the deadline: %+v %v", state, err)
+	}
+	if err := updateRecurringSchedule(&state, now, 0, true, 0, false); err == nil {
+		t.Fatal("explicit zero lifetime accepted")
+	}
+}
+
 func TestRecurringInitialSummaryIncludesPersistedObservation(t *testing.T) {
 	state := duelState{
 		Mode:            "recurring",
@@ -427,6 +448,12 @@ func TestApplyDuelResultPersistsTerminalState(t *testing.T) {
 			applyDuelResult(&state, tt.result, tt.err)
 			if state.Status != tt.wantStatus || state.Summary != tt.wantSum {
 				t.Fatalf("state=%+v want status=%q summary=%q", state, tt.wantStatus, tt.wantSum)
+			}
+			if tt.err != nil && !errors.Is(tt.err, context.Canceled) && state.LastError != tt.err.Error() {
+				t.Fatalf("last error=%q want=%q", state.LastError, tt.err.Error())
+			}
+			if (tt.err == nil || errors.Is(tt.err, context.Canceled)) && state.LastError != "" {
+				t.Fatalf("unexpected last error=%q", state.LastError)
 			}
 		})
 	}

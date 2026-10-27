@@ -29,6 +29,90 @@ func TestFormatCOSPrompt(t *testing.T) {
 	}
 }
 
+func TestCOSWaitForHandoff(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		body      string
+		status    int
+		wantError string
+	}{
+		{name: "no job", body: `{"live":{"job":null}}`, status: 200},
+		{name: "completed handoff", body: `{"live":{"job":{"stage":"done","busy":false}}}`, status: 200},
+		{name: "failed handoff", body: `{"live":{"job":{"stage":"failed","busy":false}}}`, status: 200, wantError: "failed"},
+		{name: "api failure", body: `{"error":"busy"}`, status: 503, wantError: "refusing unverified send"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet || r.URL.Path != "/v1/sessions/cos-left" || r.URL.Query().Get("live") != "1" {
+					t.Errorf("unexpected request %s %s", r.Method, r.URL.String())
+				}
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+			p := &COSProvider{HTTPClient: server.Client()}
+			err := p.waitForHandoff(context.Background(), server.URL, "token", "cos-left")
+			if tc.wantError == "" && err != nil {
+				t.Fatal(err)
+			}
+			if tc.wantError != "" && (err == nil || !strings.Contains(err.Error(), tc.wantError)) {
+				t.Fatalf("error=%v want %s", err, tc.wantError)
+			}
+		})
+	}
+}
+
+func TestCOSWaitForHandoffRespectsCancellation(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"live":{"job":{"stage":"opening","busy":true}}}`))
+	}))
+	defer server.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	p := &COSProvider{HTTPClient: server.Client()}
+	if err := p.waitForHandoff(ctx, server.URL, "token", "cos-left"); err == nil {
+		t.Fatal("in-progress handoff should not silently submit after cancellation")
+	}
+}
+
+func TestCOSCompactResumeUsesExistingMapping(t *testing.T) {
+	requested := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/sessions/cos-existing/compact-resume" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		requested++
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"live":{"job":{"stage":"handoff-pending"}}}`))
+	}))
+	defer server.Close()
+	home := t.TempDir()
+	dir := filepath.Join(home, "Library", "Application Support", "chat-on-steroids", "control-api")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	port := strings.TrimPrefix(server.URL, "http://127.0.0.1:")
+	if err := os.WriteFile(filepath.Join(dir, "endpoint.json"), []byte(`{"port":`+port+`}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "token"), []byte("test-token"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	p := &COSProvider{HomeDir: home, CWD: t.TempDir(), HTTPClient: server.Client()}
+	if err := p.saveSession("local-existing", "cos-existing"); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.CompactResume(context.Background(), "unmapped"); err == nil || !strings.Contains(err.Error(), "no COS mapping") {
+		t.Fatalf("unmapped session error: %v", err)
+	}
+	if err := p.CompactResume(context.Background(), "local-existing"); err != nil {
+		t.Fatal(err)
+	}
+	if requested != 1 {
+		t.Fatalf("requests=%d, want 1", requested)
+	}
+}
+
 func TestCOSProjectConfigPrecedence(t *testing.T) {
 	home := t.TempDir()
 	cwd := t.TempDir()

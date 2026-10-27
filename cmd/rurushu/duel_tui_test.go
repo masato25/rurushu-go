@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -116,6 +117,17 @@ func TestDuelBlockedDoesNotRing(t *testing.T) {
 	_, cmd := ui.Update(duelUpdate{done: true, result: duel.Result{Status: "blocked"}})
 	if _, ok := cmd().(tea.BatchMsg); ok {
 		t.Fatal("blocked state rang terminal bell")
+	}
+}
+
+func TestDuelErrorShowsRetryHint(t *testing.T) {
+	ui := newDuelUI(make(chan string, 1), make(chan duelUpdate, 1), func() {}, func() {})
+	ui.Update(duelUpdate{done: true, err: errors.New("left round 44: provider unavailable")})
+	if !ui.stopped {
+		t.Fatal("error should stop current duel run")
+	}
+	if !strings.Contains(ui.status, "provider unavailable") || !strings.Contains(ui.status, "Ctrl+R") {
+		t.Fatalf("error status missing diagnostic/retry hint: %q", ui.status)
 	}
 }
 
