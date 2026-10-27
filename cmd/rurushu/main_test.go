@@ -70,6 +70,21 @@ func TestRunRequiresModel(t *testing.T) {
 	}
 }
 
+func TestContinueLastWithoutSession(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	err := run([]string{"--provider", "cos", "--cwd", t.TempDir(), "-c"})
+	if err == nil || !strings.Contains(err.Error(), "no previous session") {
+		t.Fatalf("-c without sessions: %v", err)
+	}
+}
+
+func TestContinueLastRejectsResumeConflict(t *testing.T) {
+	err := run([]string{"-c", "--resume", "last"})
+	if err == nil || !strings.Contains(err.Error(), "cannot be combined") {
+		t.Fatalf("-c with --resume: %v", err)
+	}
+}
+
 func TestRunListModelsWithoutModel(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -74,6 +74,7 @@ func run(args []string) error {
 	listModels := fs.Bool("list-models", false, "list models and exit")
 	autoApprove := fs.Bool("auto-approve", saved.AutoApprove, "automatically approve all tool operations (unsafe; trusted tasks only)")
 	resumeSession := fs.String("resume", "", "resume project session by id or 'last'")
+	continueLast := fs.Bool("c", false, "continue the last project session (same as --resume last)")
 	var promptFiles stringList
 	fs.Var(&promptFiles, "prompt-file", "append a prompt file; repeatable")
 
@@ -82,6 +83,9 @@ func run(args []string) error {
 			return nil
 		}
 		return err
+	}
+	if *continueLast && strings.TrimSpace(*resumeSession) != "" {
+		return errors.New("-c cannot be combined with --resume")
 	}
 	if *maxSteps <= 0 || *maxContext <= 0 || *compactAt < 0 || *compactAt > 100 {
 		return errors.New("max-steps/max-context-tokens must be positive and compact-at must be between 0 and 100")
@@ -153,6 +157,9 @@ func run(args []string) error {
 	}
 	var session projectstate.Session
 	resumeID := strings.TrimSpace(*resumeSession)
+	if *continueLast {
+		resumeID = "last"
+	}
 	if resumeID == "" {
 		session, err = projectStore.StartSession(model, prov.ID())
 	} else if resumeID == "last" {

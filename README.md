@@ -89,6 +89,15 @@ go run ./cmd/rurushu --provider cos
 RURUSHU_PROVIDER=cos go run ./cmd/rurushu
 ```
 
+To continue the last session in the current project (including its conversation history), use `-c`:
+
+```bash
+go run ./cmd/rurushu --provider cos -c
+# equivalent to: --resume last
+```
+
+If there is no previous session, `-c` reports an error rather than creating a new conversation. Use `/sessions` in the TUI to select another session.
+
 `COS_PROJECT` and `COS_PROJECT_URL` override the config files. Each Rurushu session is mapped one-to-one to a COS session in `~/.rurushu/cos-sessions-map.json`; resumed Rurushu sessions reuse their matching ChatGPT conversation. Set `COS_NEW=1` to force creation of a new mapping, or `COS_SESSION_ID` to bind an explicit COS session.
 
 To inspect models exposed by the endpoint:

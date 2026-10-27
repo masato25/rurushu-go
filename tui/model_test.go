@@ -174,6 +174,29 @@ func TestProgressSpinnerReflectsStreamPhase(t *testing.T) {
 	}
 }
 
+func TestMarkdownRenderAndActiveResponseProgress(t *testing.T) {
+	m := NewWithStreamer("test", "test", nil)
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m.streaming = true
+	m.messages = []Message{{Role: roleAssistant, Content: "# Heading\n**bold** and `code`\n- item"}}
+	m.streamAssistantText = "# Heading"
+	m.refreshConversation()
+	view := m.viewport.View()
+	for _, raw := range []string{"Heading", "bold", "code", "•", " item", "responding"} {
+		if !strings.Contains(view, raw) {
+			t.Fatalf("missing %q in rendered response: %q", raw, view)
+		}
+	}
+	if strings.Contains(view, "**bold**") || strings.Contains(view, "# Heading") {
+		t.Fatalf("unrendered markdown: %q", view)
+	}
+	before := m.progressFrame
+	m.Update(progressTickMsg{})
+	if before == m.progressFrame {
+		t.Fatal("response progress spinner stopped during active output")
+	}
+}
+
 func TestOpenAICompatibleStreamAppendsAssistantTokens(t *testing.T) {
 	streamer := &fakeStreamer{events: []provider.StreamEvent{
 		{Type: provider.EventToken, Text: "hello"},

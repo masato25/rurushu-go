@@ -181,6 +181,9 @@ func (p *COSProvider) runStream(ctx context.Context, out chan<- StreamEvent, bas
 			}
 			lastActivity = time.Now()
 			switch event.Kind {
+			case "turn_end":
+				out <- StreamEvent{Type: EventDone}
+				return
 			case "tool_call":
 				if event.Tool != nil && !seenTools[event.Tool.CallID] {
 					seenTools[event.Tool.CallID] = true
@@ -203,10 +206,8 @@ func (p *COSProvider) runStream(ctx context.Context, out chan<- StreamEvent, bas
 					out <- StreamEvent{Type: EventToken, Text: current[len(previous):]}
 				}
 				messageTexts[mid] = current
-				if event.Final || event.State == "final" {
-					out <- StreamEvent{Type: EventDone}
-					return
-				}
+				// A final assistant message closes only that message, not the
+				// entire round. More assistant messages can follow tool calls.
 			}
 		}
 		if time.Since(lastActivity) > cosIdleTimeout {

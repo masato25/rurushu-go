@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestFormatCOSPrompt(t *testing.T) {
@@ -98,6 +99,46 @@ func TestCorrelateCOSTurn(t *testing.T) {
 	}
 	if got := correlateCOSTurn(events, "ours", false); got != "right" {
 		t.Fatalf("turn = %q, want right", got)
+	}
+}
+
+func TestCOSStreamWaitsForTurnEndAfterFinalAssistantMessage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, "/events") {
+			t.Errorf("unexpected request: %s", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"nextFrom": 7,
+			"events": []map[string]any{
+				{"seq": 1, "kind": "user_message", "inputId": "opening"},
+				{"seq": 2, "kind": "turn_start", "turnId": "turn-1"},
+				{"seq": 3, "kind": "assistant_message", "turnId": "turn-1", "messageId": "first", "message": map[string]any{"text": "first part"}, "final": true},
+				{"seq": 4, "kind": "tool_call", "turnId": "turn-1", "tool": map[string]any{"callId": "tool-1", "name": "read"}},
+				{"seq": 5, "kind": "assistant_message", "turnId": "turn-1", "messageId": "second", "message": map[string]any{"text": "second part"}, "state": "final"},
+				{"seq": 6, "kind": "turn_end", "turnId": "turn-1"},
+			},
+		})
+	}))
+	defer server.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	p := &COSProvider{HTTPClient: server.Client()}
+	out := make(chan StreamEvent)
+	go p.runStream(ctx, out, server.URL, "token", "session-1", "prompt", true)
+	var response strings.Builder
+	done := false
+	for event := range out {
+		switch event.Type {
+		case EventToken:
+			response.WriteString(event.Text)
+		case EventDone:
+			done = true
+		case EventError:
+			t.Fatalf("stream error: %v", event.Error)
+		}
+	}
+	if !done || !strings.Contains(response.String(), "first part") || !strings.Contains(response.String(), "second part") {
+		t.Fatalf("incomplete turn: done=%v response=%q", done, response.String())
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 	"github.com/masato25/rurushu-go/permission"
 	"github.com/masato25/rurushu-go/projectstate"
 	"github.com/masato25/rurushu-go/provider"
+	"regexp"
 )
 
 type Message struct {
@@ -576,6 +577,11 @@ func (m *Model) refreshConversation() {
 				content := message.Content
 				if content == "" && m.streaming && idx == len(m.messages)-1 {
 					content = progressFrames[m.progressFrame] + " " + m.progressLabel()
+				} else {
+					content = renderMarkdown(content, max(1, inner-2))
+					if m.streaming && idx == len(m.messages)-1 {
+						content += "\n" + progressFrames[m.progressFrame] + " " + m.progressLabel()
+					}
 				}
 				b.WriteString(renderTranscript("·", content, inner, agentMarkerStyle))
 			}
@@ -599,6 +605,41 @@ func (m *Model) refreshConversation() {
 		b.WriteString(mutedStyle.Render(truncate(formatPendingAttachmentHint(m.pendingAttachments), inner)))
 	}
 	m.viewport.SetContent(b.String())
+}
+
+var markdownBold = regexp.MustCompile(`\*\*([^*\n]+)\*\*`)
+var markdownCode = regexp.MustCompile("`([^`\n]+)`")
+
+func renderMarkdown(content string, width int) string {
+	lines := strings.Split(content, "\n")
+	inCode := false
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") {
+			inCode = !inCode
+			lines[i] = markdownBulletStyle.Render(line)
+			continue
+		}
+		if inCode {
+			lines[i] = markdownBlockStyle.Render(line)
+			continue
+		}
+		if strings.HasPrefix(trimmed, "# ") || strings.HasPrefix(trimmed, "## ") || strings.HasPrefix(trimmed, "### ") {
+			lines[i] = markdownHeadingStyle.Render(strings.TrimLeft(trimmed, "# "))
+			continue
+		}
+		if strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* ") {
+			line = markdownBulletStyle.Render("•") + " " + strings.TrimSpace(trimmed[2:])
+		}
+		line = markdownBold.ReplaceAllStringFunc(line, func(match string) string {
+			return markdownStrongStyle.Render(match[2 : len(match)-2])
+		})
+		line = markdownCode.ReplaceAllStringFunc(line, func(match string) string {
+			return markdownCodeStyle.Render(" " + match[1:len(match)-1] + " ")
+		})
+		lines[i] = line
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m *Model) statusView() string {
