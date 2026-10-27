@@ -36,6 +36,14 @@ type duelUI struct {
 	stopped               bool
 	status                string
 	leftID, rightID       string
+	modal                 string
+}
+
+type duelModalLayout struct {
+	dialog     string
+	x, y       int
+	okX1, okX2 int
+	okY        int
 }
 
 func newDuelUI(instructions chan string, updates chan duelUpdate, run func(), cancel context.CancelFunc, sessionIDs ...string) *duelUI {
@@ -90,7 +98,8 @@ func (m *duelUI) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			if v.err != nil {
 				m.status = "停止：" + v.err.Error()
 			} else if v.result.Status == "blocked" {
-				m.status = "等待外部條件／主人指令（Enter 送出後繼續）：" + v.result.Summary
+				m.status = "等待外部條件 · 可輸入主人指令繼續"
+				m.modal = v.result.Summary
 			} else {
 				m.status = "雙方同意，等待主人驗收：" + v.result.Summary
 			}
@@ -110,7 +119,39 @@ func (m *duelUI) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.right.GotoBottom()
 		}
 		return m, awaitDuelUpdate(m.updates)
+	case tea.MouseWheelMsg:
+		if m.modal != "" {
+			return m, nil
+		}
+		if v.Y >= 1 && v.Y < m.height-5 {
+			if v.X < m.width/2 {
+				m.left, _ = m.left.Update(v)
+			} else {
+				m.right, _ = m.right.Update(v)
+			}
+		}
+		return m, nil
+	case tea.MouseClickMsg:
+		if m.modal != "" && v.Button == tea.MouseLeft {
+			layout := m.modalLayout()
+			if v.X >= layout.okX1 && v.X <= layout.okX2 && v.Y == layout.okY {
+				m.modal = ""
+				return m, m.input.Focus()
+			}
+		}
+		return m, nil
 	case tea.KeyPressMsg:
+		if m.modal != "" {
+			switch v.String() {
+			case "enter", "esc", "o":
+				m.modal = ""
+				return m, m.input.Focus()
+			case "ctrl+c":
+				m.cancel()
+				return m, tea.Quit
+			}
+			return m, nil
+		}
 		switch v.String() {
 		case "ctrl+c":
 			m.cancel()
@@ -140,9 +181,10 @@ func (m *duelUI) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				go m.run()
 				return m, awaitDuelUpdate(m.updates)
 			}
-		case "tab":
-			m.left.GotoBottom()
-			m.right.GotoBottom()
+		case "pgup", "pgdown", "home", "end":
+			m.left, _ = m.left.Update(message)
+			m.right, _ = m.right.Update(message)
+			return m, nil
 		}
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(message)
@@ -152,16 +194,7 @@ func (m *duelUI) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func renderDuelTurn(update duelUpdate, width int) string {
-	color := "#7DAEA3"
-	if update.role == "right" {
-		color = "#8DA9E8"
-	}
-	switch update.turn.Action {
-	case "blocked":
-		color = "#E6B450"
-	case "propose_review", "agree_review":
-		color = "#A7D7C5"
-	}
+	color := duelActionColor(update.turn.Action)
 	roundLabel := fmt.Sprintf("● ROUND %02d", update.round)
 	if !update.roundTime.IsZero() {
 		roundLabel += " · " + update.roundTime.In(time.Local).Format("2006-01-02 15:04")
@@ -180,6 +213,43 @@ func renderDuelTurn(update duelUpdate, width int) string {
 	}
 	return label + "\n" + divider + "\n" + markdown
 }
+
+func duelActionColor(action string) string {
+	switch action {
+	case "plan":
+		return "#75AFFF"
+	case "research":
+		return "#C39BFF"
+	case "continue":
+		return "#6ED6AA"
+	case "blocked":
+		return "#E6A34B"
+	case "propose_review", "agree_review":
+		return "#E3C86F"
+	}
+	return "#7DAEA3"
+}
+
+func (m *duelUI) modalLayout() duelModalLayout {
+	boxWidth := max(24, min(m.width-8, 82))
+	innerWidth := max(1, boxWidth-6)
+	ok := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#8DA9E8")).Render("[ OK ]")
+	actionLine := lipgloss.PlaceHorizontal(innerWidth, lipgloss.Center, ok+"  Enter / Esc 關閉")
+	dialog := lipgloss.NewStyle().Width(boxWidth).Padding(1, 2).Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("#E6A34B")).Background(lipgloss.Color("#222831")).Render(
+		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#E6A34B")).Render("⚠ 等待外部條件") + "\n\n" +
+			lipgloss.NewStyle().Width(innerWidth).Render(m.modal) + "\n\n" + actionLine)
+	dialogWidth := lipgloss.Width(dialog)
+	dialogHeight := lipgloss.Height(dialog)
+	x := max(0, (m.width-dialogWidth)/2)
+	y := max(0, (m.height-dialogHeight)/2)
+	// The action line is the last content row before bottom padding and border.
+	okY := y + dialogHeight - 3
+	okStartInLine := max(0, (innerWidth-lipgloss.Width(ok+"  Enter / Esc 關閉"))/2)
+	// Account for the left border and two columns of horizontal padding.
+	okX1 := x + 3 + okStartInLine
+	return duelModalLayout{dialog: dialog, x: x, y: y, okX1: okX1, okX2: okX1 + lipgloss.Width(ok) - 1, okY: okY}
+}
+
 func (m *duelUI) View() tea.View {
 	w := max(16, (m.width-3)/2)
 	headline := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#E6B450"))
@@ -196,5 +266,14 @@ func (m *duelUI) View() tea.View {
 	view := lipgloss.JoinHorizontal(lipgloss.Top, lipgloss.NewStyle().Width(w).Render(left), " │ ", lipgloss.NewStyle().Width(w).Render(right))
 	footer := "\n" + m.status + "\n" + m.input.View() + "\nCtrl+C 離開 · Ctrl+R 重試 · Shift+Enter 換行"
 	result := tea.NewView(view + footer)
+	result.AltScreen = true
+	result.MouseMode = tea.MouseModeCellMotion
+	if m.modal != "" {
+		layout := m.modalLayout()
+		canvas := lipgloss.NewCanvas(max(m.width, lipgloss.Width(layout.dialog)+2), max(m.height, 12))
+		canvas.Compose(lipgloss.NewLayer(result.Content))
+		canvas.Compose(lipgloss.NewLayer(layout.dialog).X(layout.x).Y(layout.y))
+		result.Content = canvas.Render()
+	}
 	return result
 }

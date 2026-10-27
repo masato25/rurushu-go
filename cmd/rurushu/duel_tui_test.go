@@ -121,3 +121,73 @@ func TestDuelTurnHeaderSupportsLegacyRoundWithoutTimestamp(t *testing.T) {
 		t.Fatalf("legacy round header=%q", got)
 	}
 }
+
+func TestDuelActionColors(t *testing.T) {
+	tests := map[string]string{
+		"plan":           "#75AFFF",
+		"research":       "#C39BFF",
+		"continue":       "#6ED6AA",
+		"blocked":        "#E6A34B",
+		"propose_review": "#E3C86F",
+		"agree_review":   "#E3C86F",
+		"unknown":        "#7DAEA3",
+	}
+	for action, want := range tests {
+		if got := duelActionColor(action); got != want {
+			t.Fatalf("action %q color=%q want=%q", action, got, want)
+		}
+	}
+}
+
+func TestDuelViewportMouseScrolling(t *testing.T) {
+	ui := newDuelUI(make(chan string, 1), make(chan duelUpdate, 1), func() {}, func() {})
+	ui.Update(tea.WindowSizeMsg{Width: 90, Height: 24})
+	if !ui.View().AltScreen || ui.View().MouseMode == tea.MouseModeNone {
+		t.Fatal("duel must capture terminal wheel events")
+	}
+	ui.left.SetContent(strings.Repeat("left line\n", 100))
+	ui.right.SetContent(strings.Repeat("right line\n", 100))
+	ui.left.GotoBottom()
+	ui.right.GotoBottom()
+	rightBefore := ui.right.YOffset()
+	leftBefore := ui.left.YOffset()
+	ui.Update(tea.MouseWheelMsg{X: 5, Y: 8, Button: tea.MouseWheelUp})
+	if ui.left.YOffset() >= leftBefore {
+		t.Fatal("left pane did not scroll")
+	}
+	if ui.right.YOffset() != rightBefore {
+		t.Fatal("right pane scrolled with left")
+	}
+}
+
+func TestDuelBlockedDialogDismissesWithoutResuming(t *testing.T) {
+	ui := newDuelUI(make(chan string, 1), make(chan duelUpdate, 1), func() {}, func() {})
+	ui.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	ui.Update(duelUpdate{done: true, result: duel.Result{Status: "blocked", Summary: "Awaiting owner authorization"}})
+	if !strings.Contains(ui.View().Content, "[ OK ]") || ui.modal == "" {
+		t.Fatal("blocked dialog missing")
+	}
+	layout := ui.modalLayout()
+	ui.Update(tea.MouseClickMsg{X: layout.okX1, Y: layout.okY + 1, Button: tea.MouseLeft})
+	if ui.modal == "" {
+		t.Fatal("click outside OK unexpectedly dismissed dialog")
+	}
+	ui.Update(tea.MouseClickMsg{X: layout.okX1, Y: layout.okY, Button: tea.MouseLeft})
+	if ui.modal != "" || !ui.stopped {
+		t.Fatal("OK dismissal should not restart blocked duel")
+	}
+	if !ui.input.Focused() {
+		t.Fatal("input should regain focus after dialog dismissal")
+	}
+}
+
+func TestDuelBlockedDialogKeyboardDismissesAndRestoresFocus(t *testing.T) {
+	ui := newDuelUI(make(chan string, 1), make(chan duelUpdate, 1), func() {}, func() {})
+	ui.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	ui.Update(duelUpdate{done: true, result: duel.Result{Status: "blocked", Summary: "Awaiting owner authorization"}})
+	ui.input.Blur()
+	ui.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if ui.modal != "" || !ui.input.Focused() {
+		t.Fatal("keyboard dismissal should close dialog and restore input focus")
+	}
+}
