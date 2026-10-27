@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -592,8 +591,18 @@ func correlateCOSTurn(events []cosEvent, inputID string, alreadySubmitted bool) 
 
 func randomID() string {
 	var data [16]byte
-	_, _ = rand.Read(data[:])
-	return hex.EncodeToString(data[:])
+	if _, err := rand.Read(data[:]); err != nil {
+		return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", time.Now().Unix(), os.Getpid()&0xffff, 0x4000, 0x8000, time.Now().UnixNano()&0xffffffffffff)
+	}
+	data[6] = (data[6] & 0x0f) | 0x40
+	data[8] = (data[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		data[0:4],
+		data[4:6],
+		data[6:8],
+		data[8:10],
+		data[10:16],
+	)
 }
 
 func sleepContext(ctx context.Context, delay time.Duration) bool {

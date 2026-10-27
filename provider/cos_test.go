@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -73,6 +74,13 @@ func TestCorrelateCOSTurn(t *testing.T) {
 	}
 	if got := correlateCOSTurn(events, "ours", false); got != "right" {
 		t.Fatalf("turn = %q, want right", got)
+	}
+}
+
+func TestRandomIDIsUUID(t *testing.T) {
+	id := randomID()
+	if !regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`).MatchString(id) {
+		t.Fatalf("randomID() = %q, want UUID v4", id)
 	}
 }
 
