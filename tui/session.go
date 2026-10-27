@@ -27,16 +27,12 @@ func (m *Model) registerSessionSlashCommands() {
 	_ = m.RegisterSlashCommand(SlashCommand{
 		Name:        "sessions",
 		Usage:       "/sessions",
-		Description: "list project sessions",
+		Description: "select a project session",
 		Run: func(args string) (SlashCommandResult, error) {
 			if strings.TrimSpace(args) != "" {
 				return SlashCommandResult{}, fmt.Errorf("/sessions does not accept arguments")
 			}
-			sessions, err := m.sessionStore.ListSessions()
-			if err != nil {
-				return SlashCommandResult{}, err
-			}
-			return SlashCommandResult{Output: formatSessions(sessions, m.sessionID)}, nil
+			return m.sessionPicker()
 		},
 	})
 	_ = m.RegisterSlashCommand(SlashCommand{
@@ -46,29 +42,7 @@ func (m *Model) registerSessionSlashCommands() {
 		Run: func(args string) (SlashCommandResult, error) {
 			id := strings.TrimSpace(args)
 			if id == "" {
-				sessions, err := m.sessionStore.ListSessions()
-				if err != nil {
-					return SlashCommandResult{}, err
-				}
-				if len(sessions) == 0 {
-					return SlashCommandResult{Output: "No saved sessions."}, nil
-				}
-				items := make([]selectionPickerItem, 0, len(sessions))
-				for _, listed := range sessions {
-					sessionID := listed.ID
-					marker := " "
-					if sessionID == m.sessionID {
-						marker = "*"
-					}
-					items = append(items, selectionPickerItem{
-						Label:   fmt.Sprintf("%s %s  %d asks  %s", marker, sessionID, countUserAsks(listed.Messages), formatSessionTime(listed.UpdatedAt)),
-						Command: "/resume " + sessionID,
-						Run: func() (string, error) {
-							return m.resumeSession(sessionID)
-						},
-					})
-				}
-				return SlashCommandResult{picker: &selectionPicker{Title: "resume session", Items: items}}, nil
+				return m.sessionPicker()
 			}
 			output, err := m.resumeSession(id)
 			return SlashCommandResult{Output: output}, err
@@ -135,6 +109,32 @@ func (m *Model) registerSessionSlashCommands() {
 			return SlashCommandResult{Output: output}, nil
 		},
 	})
+}
+
+func (m *Model) sessionPicker() (SlashCommandResult, error) {
+	sessions, err := m.sessionStore.ListSessions()
+	if err != nil {
+		return SlashCommandResult{}, err
+	}
+	if len(sessions) == 0 {
+		return SlashCommandResult{Output: "No saved sessions."}, nil
+	}
+	items := make([]selectionPickerItem, 0, len(sessions))
+	for _, listed := range sessions {
+		sessionID := listed.ID
+		marker := " "
+		if sessionID == m.sessionID {
+			marker = "*"
+		}
+		items = append(items, selectionPickerItem{
+			Label:   fmt.Sprintf("%s %s  %d asks  %s", marker, sessionID, countUserAsks(listed.Messages), formatSessionTime(listed.UpdatedAt)),
+			Command: "/resume " + sessionID,
+			Run: func() (string, error) {
+				return m.resumeSession(sessionID)
+			},
+		})
+	}
+	return SlashCommandResult{picker: &selectionPicker{Title: "select session", Items: items}}, nil
 }
 
 func isCOSProvider(providerID string) bool {

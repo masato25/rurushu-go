@@ -252,6 +252,58 @@ func TestResumePickerSupportsArrowSelectionAndEnter(t *testing.T) {
 	}
 }
 
+func TestSessionsPickerSupportsArrowSelectionAndEnter(t *testing.T) {
+	store, err := projectstate.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.StartSession("test-model", "openai-compatible")
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstHistory := []provider.Message{
+		{Role: provider.RoleUser, Content: "first session ask"},
+		{Role: provider.RoleAssistant, Content: "first session answer"},
+	}
+	first, err = store.SaveSession(first.ID, "test-model", "openai-compatible", firstHistory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.StartSession("test-model", "openai-compatible")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondHistory := []provider.Message{
+		{Role: provider.RoleUser, Content: "second session ask"},
+		{Role: provider.RoleAssistant, Content: "second session answer"},
+	}
+	second, err = store.SaveSession(second.ID, "test-model", "openai-compatible", secondHistory)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m := New("test-model", "openai-compatible")
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 28})
+	m.SetProjectSession(store, second)
+	if cmd := submitSlashTest(t, m, "/sessions"); cmd != nil {
+		t.Fatal("/sessions picker unexpectedly returned async command")
+	}
+	if m.selectionPicker == nil || len(m.selectionPicker.Items) != 2 {
+		t.Fatalf("sessions picker=%#v", m.selectionPicker)
+	}
+	if !strings.Contains(m.selectionPicker.Items[0].Label, second.ID) {
+		t.Fatalf("newest/current session was not first: %#v", m.selectionPicker.Items)
+	}
+	m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+	m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	if m.selectionPicker != nil {
+		t.Fatal("sessions picker stayed open after Enter")
+	}
+	if m.SessionID() != first.ID || !reflect.DeepEqual(m.history, firstHistory) {
+		t.Fatalf("selected session not restored: id=%q history=%#v", m.SessionID(), m.history)
+	}
+}
+
 func TestRewindPickerSupportsArrowSelectionAndEnter(t *testing.T) {
 	store, err := projectstate.Open(t.TempDir())
 	if err != nil {
