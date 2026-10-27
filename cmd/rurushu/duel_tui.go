@@ -140,6 +140,13 @@ func (m *duelUI) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, nil
+	case tea.PasteMsg:
+		if m.modal != "" {
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.input, cmd = m.input.Update(v)
+		return m, cmd
 	case tea.KeyPressMsg:
 		if m.modal != "" {
 			switch v.String() {

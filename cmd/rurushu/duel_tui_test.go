@@ -65,6 +65,27 @@ func TestDuelTUIAcceptsTypingAfterProviderError(t *testing.T) {
 	}
 }
 
+func TestDuelTUIAcceptsPasteWhileWaitingForOwnerReview(t *testing.T) {
+	notes := make(chan string, 4)
+	ui := newDuelUI(notes, make(chan duelUpdate, 4), func() {}, func() {})
+	ui.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	ui.Update(duelUpdate{done: true, result: duel.Result{Status: "owner_review", Summary: "ready for acceptance"}})
+
+	pasted := "請協助我去驗收 ss\n並確認測試結果"
+	ui.Update(tea.PasteMsg{Content: pasted})
+	if got := ui.input.Value(); got != pasted {
+		t.Fatalf("pasted owner instruction=%q want=%q", got, pasted)
+	}
+
+	ui.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if got := <-notes; got != pasted {
+		t.Fatalf("submitted pasted owner instruction=%q want=%q", got, pasted)
+	}
+	if ui.stopped {
+		t.Fatal("duel did not restart after pasted owner instruction")
+	}
+}
+
 func TestDuelOwnerReviewRingsExactlyOnce(t *testing.T) {
 	ui := newDuelUI(make(chan string, 1), make(chan duelUpdate, 1), func() {}, func() {})
 	_, cmd := ui.Update(duelUpdate{done: true, result: duel.Result{Status: "owner_review"}})
