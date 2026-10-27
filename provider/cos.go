@@ -273,10 +273,19 @@ func (p *COSProvider) resolveSession(ctx context.Context, baseURL, token, localI
 		var data struct {
 			Session cosSession `json:"session"`
 		}
-		if p.getJSON(ctx, baseURL+"/v1/sessions/"+url.PathEscape(stored), token, &data) == nil && data.Session.ID != "" && data.Session.EndedAt == nil {
-			p.bindSession(localID, stored)
-			return stored, false, nil
+		if err := p.getJSON(ctx, baseURL+"/v1/sessions/"+url.PathEscape(stored), token, &data); err != nil {
+			return "", false, fmt.Errorf("mapped COS session %s for local session %s is unavailable; refusing to create a replacement automatically: %w", stored, localID, err)
 		}
+		if data.Session.ID == "" {
+			return "", false, fmt.Errorf("mapped COS session %s for local session %s returned no session id; refusing to create a replacement automatically", stored, localID)
+		}
+		// A local Rurushu session owns exactly one remote COS session. Do not
+		// silently replace it when COS marks the remote session ended; doing so
+		// causes resume/error retries to accumulate remote sessions. Reuse the
+		// mapped id and let the input API report whether it can accept another
+		// turn. Starting a replacement requires an explicit new local session.
+		p.bindSession(localID, stored)
+		return stored, false, nil
 	}
 	// COS_NEW only controls creation for an unbound local Rurushu session.
 	// A resumed local session with an existing mapping must keep using the
@@ -285,8 +294,10 @@ func (p *COSProvider) resolveSession(ctx context.Context, baseURL, token, localI
 	if err != nil {
 		return "", false, err
 	}
-	p.saveSession(localID, id)
 	p.bindSession(localID, id)
+	if err := p.saveSession(localID, id); err != nil {
+		return "", false, fmt.Errorf("persist COS session mapping: %w", err)
+	}
 	return id, submitted, nil
 }
 
@@ -449,15 +460,41 @@ func (p *COSProvider) storedSession(localID string) string {
 	return m.Sessions[localID]
 }
 
-func (p *COSProvider) saveSession(localID, remoteID string) {
+func (p *COSProvider) saveSession(localID, remoteID string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	m := p.readMap()
 	m.Sessions[localID] = remoteID
 	m.ByCWD[p.CWD] = remoteID
-	data, _ := json.MarshalIndent(m, "", "  ")
-	_ = os.MkdirAll(filepath.Dir(p.mapPath()), 0o700)
-	_ = os.WriteFile(p.mapPath(), append(data, '\n'), 0o600)
+	data, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return err
+	}
+	path := p.mapPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".cos-sessions-*.tmp")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if err = tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err = tmp.Write(append(data, '\n')); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err = tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err = tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
 }
 
 func (p *COSProvider) readMap() cosSessionMap {

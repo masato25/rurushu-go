@@ -43,6 +43,9 @@ func main() {
 }
 
 func run(args []string) error {
+	if len(args) > 0 && args[0] == "duel" {
+		return runDuel(args[1:])
+	}
 	if len(args) > 0 && args[0] == "__job-runner" {
 		return runJobRunner(args[1:])
 	}

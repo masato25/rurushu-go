@@ -250,3 +250,24 @@ Slash command input and output are local UI state and are not appended to model 
 ## Design boundary
 
 The harness does not own queues, worker scheduling, business-job retries, checkpoints, durable memory, agent planning modes, or domain workflows. Those stay in the embedding application. The optional TUI and OpenAI-compatible adapter sit on top of the same library contracts rather than being required by the harness core.
+
+### COS two-session duel (左右互搏)
+
+Start two independently mapped COS sessions: RIGHT decides and reviews; LEFT executes and verifies.
+The process has **no fixed round limit**. Normal completion requires RIGHT to propose owner review and LEFT to explicitly agree in the same round. Ctrl+C interrupts safely without recording success. The current duel IDs, round count and latest summary are saved at `.rurushu/duel-state.json`.
+
+```bash
+go run ./cmd/rurushu duel --goal "Improve the project until it is ready for acceptance"
+# Resume the same two sessions after an interruption:
+go run ./cmd/rurushu duel --resume
+
+# Existing duel state is reused by default; this does not create new LEFT/RIGHT sessions.
+go run ./cmd/rurushu duel --goal "continue the same task"
+
+# Start a fresh LEFT/RIGHT pair only when you intentionally want a new duel.
+go run ./cmd/rurushu duel --new --goal "start a different task"
+```
+
+The command opens a split-screen TUI: LEFT's execution reports on the left, RIGHT's decisions on the right, and an owner input area at the bottom. Enter submits additional instructions while the duel keeps working; Shift+Enter adds a line. Instructions are applied at the next decision boundary, not injected into an in-flight COS turn. Ctrl+C exits and preserves the latest completed-round summary.
+
+When RIGHT cannot determine a next step, it is instructed to seek current web evidence and URLs through COS browsing capabilities. Web research depends on tools actually available to the remote ChatGPT session; the coordinator cannot independently guarantee that browsing occurred. The structured responses include evidence and must not fabricate sources. Provider errors are surfaced instead of being interpreted as approval. This mode may make repeated remote requests; use Ctrl+C to stop it manually.

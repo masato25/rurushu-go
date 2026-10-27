@@ -53,8 +53,12 @@ func TestCOSProjectConfigPrecedence(t *testing.T) {
 
 func TestCOSSessionMappingIsPerRurushuSession(t *testing.T) {
 	p := &COSProvider{HomeDir: t.TempDir(), CWD: "/workspace"}
-	p.saveSession("local-a", "cos-a")
-	p.saveSession("local-b", "cos-b")
+	if err := p.saveSession("local-a", "cos-a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.saveSession("local-b", "cos-b"); err != nil {
+		t.Fatal(err)
+	}
 	if got := p.storedSession("local-a"); got != "cos-a" {
 		t.Fatalf("local-a = %q", got)
 	}
@@ -78,7 +82,9 @@ func TestResolveSessionReusesStoredMappingWhenCOSNewIsSet(t *testing.T) {
 	defer server.Close()
 
 	p := &COSProvider{HomeDir: t.TempDir(), CWD: "/workspace", HTTPClient: server.Client()}
-	p.saveSession("local-existing", "cos-existing")
+	if err := p.saveSession("local-existing", "cos-existing"); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("COS_NEW", "1")
 
 	id, submitted, err := p.resolveSession(context.Background(), server.URL, "token", "local-existing", "follow-up")
@@ -87,6 +93,86 @@ func TestResolveSessionReusesStoredMappingWhenCOSNewIsSet(t *testing.T) {
 	}
 	if id != "cos-existing" || submitted {
 		t.Fatalf("resolveSession = (%q, %t), want (cos-existing, false)", id, submitted)
+	}
+}
+
+func TestResolveSessionReusesStoredMappingEvenWhenRemoteIsEnded(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/sessions/cos-ended" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		ended := int64(123)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"session": map[string]any{"id": "cos-ended", "endedAt": ended},
+		})
+	}))
+	defer server.Close()
+
+	p := &COSProvider{HomeDir: t.TempDir(), CWD: "/workspace", HTTPClient: server.Client()}
+	if err := p.saveSession("local-ended", "cos-ended"); err != nil {
+		t.Fatal(err)
+	}
+	id, submitted, err := p.resolveSession(context.Background(), server.URL, "token", "local-ended", "follow-up")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != "cos-ended" || submitted {
+		t.Fatalf("resolveSession = (%q, %t), want (cos-ended, false)", id, submitted)
+	}
+}
+
+func TestResolveSessionDoesNotReplaceUnavailableStoredMapping(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		http.Error(w, "missing", http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	p := &COSProvider{
+		HomeDir:    t.TempDir(),
+		CWD:        "/workspace",
+		HTTPClient: server.Client(),
+		AutoSubmit: func(context.Context, string, string, string) (bool, error) {
+			t.Fatal("unavailable stored mapping must not create a replacement session")
+			return false, nil
+		},
+	}
+	if err := p.saveSession("local-missing", "cos-missing"); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := p.resolveSession(context.Background(), server.URL, "token", "local-missing", "follow-up")
+	if err == nil || !strings.Contains(err.Error(), "refusing to create a replacement") {
+		t.Fatalf("expected replacement refusal, got %v", err)
+	}
+	if requests != 1 {
+		t.Fatalf("requests = %d, want exactly one lookup", requests)
+	}
+}
+
+func TestCOSSessionMappingPersistsAtomically(t *testing.T) {
+	home := t.TempDir()
+	p := &COSProvider{HomeDir: home, CWD: "/workspace"}
+	if err := p.saveSession("local-a", "cos-a"); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(home, ".rurushu", "cos-sessions-map.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got cosSessionMap
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Sessions["local-a"] != "cos-a" {
+		t.Fatalf("mapping = %+v", got.Sessions)
+	}
+	info, err := os.Stat(filepath.Join(home, ".rurushu", "cos-sessions-map.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("mapping permissions = %v", info.Mode().Perm())
 	}
 }
 
