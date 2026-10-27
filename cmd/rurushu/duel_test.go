@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -18,6 +19,43 @@ import (
 func TestDuelRejectsMissingGoal(t *testing.T) {
 	if err := runDuel([]string{"--cwd", t.TempDir()}); err == nil {
 		t.Fatal("missing goal accepted")
+	}
+}
+
+func TestDuelHelpExplainsRecurringLifecycle(t *testing.T) {
+	oldStderr := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = w
+	t.Cleanup(func() { os.Stderr = oldStderr })
+
+	if err := runDuel([]string{"--help"}); err != nil {
+		t.Fatalf("help failed: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if _, err := buf.ReadFrom(r); err != nil {
+		t.Fatal(err)
+	}
+	got := buf.String()
+	for _, want := range []string{
+		"Recurring duel:",
+		"--run-for is the total lifetime",
+		"--poll-every is how often RIGHT wakes up",
+		"wait            no useful LEFT work yet",
+		"plan/research",
+		"rurushu duel --new",
+		"rurushu duel --resume",
+		"Do not pass",
+		"not a daemon or system service",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("help missing %q:\n%s", want, got)
+		}
 	}
 }
 func TestDuelResumeRequiresState(t *testing.T) {

@@ -291,6 +291,7 @@ func resolveDuelState(store *projectstate.Store, path, requestedGoal string, res
 
 func runDuel(args []string) error {
 	fs := flag.NewFlagSet("rurushu duel", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
 	cwdDefault, _ := os.Getwd()
 	cwd := fs.String("cwd", cwdDefault, "project directory")
 	goal := fs.String("goal", "", "task goal for both agents")
@@ -298,6 +299,42 @@ func runDuel(args []string) error {
 	newDuel := fs.Bool("new", false, "start a new duel with a fresh LEFT/RIGHT session pair")
 	runFor := fs.Duration("run-for", 0, "run a recurring duel for this duration (for example 10m)")
 	pollEvery := fs.Duration("poll-every", 30*time.Second, "recurring duel interval (for example 30s)")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), `Usage:
+  rurushu duel --new --goal "<goal>" [--run-for DURATION --poll-every DURATION]
+  rurushu duel --resume
+
+Recurring duel:
+  --run-for is the total lifetime of the recurring run.
+  --poll-every is how often RIGHT wakes up to observe the latest state again.
+
+  On each poll RIGHT decides what happens next:
+    wait            no useful LEFT work yet; keep observing on the next poll
+    plan/research   hand a concrete task to LEFT, then schedule the next poll
+    blocked         stop because owner/manual/secret intervention is required
+    propose_review  stop because the goal appears ready for owner review
+
+Example:
+  rurushu duel --new \
+    --goal "持續觀測 preflight 與 executor；沒有 READY_TO_SEND 時等待，有 net-positive READY 時啟動 executor，直到確認鏈上獲利或需要主人介入" \
+    --run-for 30m \
+    --poll-every 1m
+
+Resume:
+  Press Ctrl+C to interrupt safely. From the same workspace, run:
+    rurushu duel --resume
+
+  Resume keeps the original deadline and next poll schedule. Do not pass
+  --run-for or --poll-every again when resuming an existing recurring duel.
+
+Process lifetime:
+  This MVP is not a daemon or system service. The rurushu process must remain
+  alive while polling; closing the terminal/process stops execution until you
+  explicitly run --resume.
+
+Options:`)
+		fs.PrintDefaults()
+	}
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
