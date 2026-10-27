@@ -1,6 +1,10 @@
 package tui
 
-import "charm.land/lipgloss/v2"
+import (
+	"charm.land/glamour/v2/ansi"
+	"charm.land/glamour/v2/styles"
+	"charm.land/lipgloss/v2"
+)
 
 var (
 	statusNameStyle = lipgloss.NewStyle().
@@ -34,3 +38,28 @@ var (
 	markdownBulletStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("#7DAEA3"))
 )
+
+func markdownColor(value string) *string { return &value }
+func markdownSpacing(value uint) *uint   { return &value }
+
+func rurushuMarkdownStyle() ansi.StyleConfig {
+	cfg := styles.DarkStyleConfig
+	cfg.Document.Margin = markdownSpacing(0)
+	cfg.Document.BlockPrefix = ""
+	cfg.Document.BlockSuffix = ""
+	cfg.Document.Color = markdownColor("#D5D9E0")
+	cfg.Heading.Color = markdownColor("#E6B450")
+	cfg.H1.Prefix, cfg.H1.Suffix = "", ""
+	cfg.H1.BackgroundColor = nil
+	cfg.H1.Color = markdownColor("#E6B450")
+	cfg.H2.Prefix, cfg.H3.Prefix = "", ""
+	cfg.Strong.Color = markdownColor("#E5E9F0")
+	cfg.Code.Color = markdownColor("#A7D7C5")
+	cfg.Code.BackgroundColor = markdownColor("#27313A")
+	cfg.CodeBlock.Margin = markdownSpacing(0)
+	cfg.CodeBlock.Color = markdownColor("#C5D1DC")
+	cfg.Item.Color = markdownColor("#7DAEA3")
+	cfg.Link.Color = markdownColor("#7DAEA3")
+	cfg.LinkText.Color = markdownColor("#A7D7C5")
+	return cfg
+}

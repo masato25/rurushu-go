@@ -143,7 +143,13 @@ func (p *COSProvider) runStream(ctx context.Context, out chan<- StreamEvent, bas
 		nextFrom = 1
 	}
 
-	messageTexts := map[string]string{}
+	// COS sends complete message snapshots, which can be revised (not just
+	// extended). Keep the ordered parts so revisions replace stale content.
+	parts := []string{}
+	messageParts := map[string]int{}
+	emitSnapshot := func() {
+		out <- StreamEvent{Type: EventReplace, Text: strings.Join(parts, "")}
+	}
 	seenTools := map[string]bool{}
 	var correlation []cosEvent
 	remoteTurnID := ""
@@ -191,7 +197,8 @@ func (p *COSProvider) runStream(ctx context.Context, out chan<- StreamEvent, bas
 					if event.Tool.Summary != nil && event.Tool.Summary.Title != "" {
 						title = event.Tool.Summary.Title
 					}
-					out <- StreamEvent{Type: EventToken, Text: fmt.Sprintf("\n> ⚙️ `[Tool: %s]` %s\n", event.Tool.Name, title)}
+					parts = append(parts, fmt.Sprintf("\n> ⚙️ `[Tool: %s]` %s\n", event.Tool.Name, title))
+					emitSnapshot()
 				}
 			case "assistant_message":
 				if event.Message == nil {
@@ -201,11 +208,16 @@ func (p *COSProvider) runStream(ctx context.Context, out chan<- StreamEvent, bas
 				if mid == "" {
 					mid = "latest"
 				}
-				previous, current := messageTexts[mid], event.Message.Text
-				if len(current) > len(previous) && strings.HasPrefix(current, previous) {
-					out <- StreamEvent{Type: EventToken, Text: current[len(previous):]}
+				if index, ok := messageParts[mid]; ok {
+					if parts[index] != event.Message.Text {
+						parts[index] = event.Message.Text
+						emitSnapshot()
+					}
+				} else {
+					messageParts[mid] = len(parts)
+					parts = append(parts, event.Message.Text)
+					emitSnapshot()
 				}
-				messageTexts[mid] = current
 				// A final assistant message closes only that message, not the
 				// entire round. More assistant messages can follow tool calls.
 			}

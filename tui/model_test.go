@@ -8,6 +8,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/masato25/rurushu-go/permission"
 	"github.com/masato25/rurushu-go/provider"
 )
@@ -182,7 +183,7 @@ func TestMarkdownRenderAndActiveResponseProgress(t *testing.T) {
 	m.streamAssistantText = "# Heading"
 	m.refreshConversation()
 	view := m.viewport.View()
-	for _, raw := range []string{"Heading", "bold", "code", "•", " item", "responding"} {
+	for _, raw := range []string{"Heading", "bold", "code", "item", "responding"} {
 		if !strings.Contains(view, raw) {
 			t.Fatalf("missing %q in rendered response: %q", raw, view)
 		}
@@ -194,6 +195,52 @@ func TestMarkdownRenderAndActiveResponseProgress(t *testing.T) {
 	m.Update(progressTickMsg{})
 	if before == m.progressFrame {
 		t.Fatal("response progress spinner stopped during active output")
+	}
+}
+
+func TestGlamourMarkdownStructures(t *testing.T) {
+	source := "# Heading\n\n*italic* ~~removed~~\n\n- parent\n  - child\n\n```go\nfunc main() {\n    println(\"hello\")\n}\n```\n\n| Key | Value |\n| --- | --- |\n| A | B |\n\n> quoted\n\n[Go](https://go.dev)"
+	got := ansi.Strip(renderMarkdown(source, 78))
+	for _, want := range []string{"Heading", "italic", "removed", "parent", "child", "func main()", `println("hello")`, "Key", "Value", "quoted", "Go"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("Markdown output missing %q: %q", want, got)
+		}
+	}
+	for _, raw := range []string{"```go", "~~removed~~", "| --- | --- |"} {
+		if strings.Contains(got, raw) {
+			t.Fatalf("Markdown syntax leaked %q: %q", raw, got)
+		}
+	}
+}
+
+func TestMarkdownLinksDoNotLeakOSC8Controls(t *testing.T) {
+	got := renderMarkdown("- [Go Documentation](https://go.dev/doc/)\n- [Glamour](https://github.com/charmbracelet/glamour)", 80)
+	for _, want := range []string{"Go Documentation", "https://go.dev/doc/", "Glamour"} {
+		if !strings.Contains(ansi.Strip(got), want) {
+			t.Fatalf("missing link content %q: %q", want, got)
+		}
+	}
+	if strings.Contains(got, "\x1b]8;") || strings.Contains(got, "]8;;") {
+		t.Fatalf("OSC 8 hyperlink controls leaked: %q", got)
+	}
+	if !strings.Contains(got, "\x1b[") {
+		t.Fatalf("styling was stripped along with hyperlinks: %q", got)
+	}
+}
+
+func TestCOSSnapshotCorrectionReplacesDisplayedAndSavedText(t *testing.T) {
+	m := NewWithStreamer("test", "cos", nil)
+	m.streaming = true
+	m.messages = []Message{{Role: roleAssistant}}
+	m.applyStreamEvent(provider.StreamEvent{Type: provider.EventReplace, Text: "incomplete code ```go"})
+	m.applyStreamEvent(provider.StreamEvent{Type: provider.EventReplace, Text: "complete code\n\n```go\nfunc main() {}\n```"})
+	want := "complete code\n\n```go\nfunc main() {}\n```"
+	if len(m.messages) != 1 || m.messages[0].Content != want {
+		t.Fatalf("display retained stale snapshot: %#v", m.messages)
+	}
+	m.commitAssistantHistory()
+	if len(m.history) != 1 || m.history[0].Content != want {
+		t.Fatalf("history retained stale snapshot: %#v", m.history)
 	}
 }
 

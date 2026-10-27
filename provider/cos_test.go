@@ -129,7 +129,8 @@ func TestCOSStreamWaitsForTurnEndAfterFinalAssistantMessage(t *testing.T) {
 	done := false
 	for event := range out {
 		switch event.Type {
-		case EventToken:
+		case EventReplace:
+			response.Reset()
 			response.WriteString(event.Text)
 		case EventDone:
 			done = true
@@ -139,6 +140,36 @@ func TestCOSStreamWaitsForTurnEndAfterFinalAssistantMessage(t *testing.T) {
 	}
 	if !done || !strings.Contains(response.String(), "first part") || !strings.Contains(response.String(), "second part") {
 		t.Fatalf("incomplete turn: done=%v response=%q", done, response.String())
+	}
+}
+
+func TestCOSStreamHandlesRevisedMessageSnapshots(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"nextFrom": 6, "events": []map[string]any{
+			{"seq": 1, "kind": "user_message", "inputId": "opening"},
+			{"seq": 2, "kind": "turn_start", "turnId": "turn-1"},
+			{"seq": 3, "kind": "assistant_message", "turnId": "turn-1", "messageId": "one", "message": map[string]any{"text": "func main() { incomplete"}},
+			{"seq": 4, "kind": "assistant_message", "turnId": "turn-1", "messageId": "one", "message": map[string]any{"text": "func main() { complete }"}},
+			{"seq": 5, "kind": "turn_end", "turnId": "turn-1"},
+		}})
+	}))
+	defer server.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	p := &COSProvider{HTTPClient: server.Client()}
+	out := make(chan StreamEvent)
+	go p.runStream(ctx, out, server.URL, "token", "session-1", "prompt", true)
+	var last string
+	for event := range out {
+		if event.Type == EventReplace {
+			last = event.Text
+		}
+		if event.Type == EventError {
+			t.Fatal(event.Error)
+		}
+	}
+	if last != "func main() { complete }" {
+		t.Fatalf("snapshot was not replaced: %q", last)
 	}
 }
 

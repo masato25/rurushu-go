@@ -56,6 +56,7 @@ type EventType string
 
 const (
 	EventToken          EventType = "token"
+	EventReplace        EventType = "replace"
 	EventReasoning      EventType = "reasoning"
 	EventToolCall       EventType = "tool_call"
 	EventToolStart      EventType = "tool_start"

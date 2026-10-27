@@ -53,6 +53,12 @@ func (c *Client) streamWithTools(ctx context.Context, initial provider.Completio
 					return
 				}
 				switch event.Type {
+				case provider.EventReplace:
+					text.Reset()
+					text.WriteString(event.Text)
+					if !emitEvent(ctx, out, event) {
+						return
+					}
 				case provider.EventToken:
 					text.WriteString(event.Text)
 					if !emitEvent(ctx, out, event) {

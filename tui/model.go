@@ -4,18 +4,19 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"regexp"
 	"strings"
 	"time"
 
 	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/glamour/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/masato25/rurushu-go/jobs"
 	"github.com/masato25/rurushu-go/permission"
 	"github.com/masato25/rurushu-go/projectstate"
 	"github.com/masato25/rurushu-go/provider"
-	"regexp"
 )
 
 type Message struct {
@@ -23,6 +24,12 @@ type Message struct {
 	Content  string
 	Local    bool
 	Activity *activityEntry
+}
+
+type markdownCacheEntry struct {
+	source   string
+	width    int
+	rendered string
 }
 
 type Streamer interface {
@@ -59,6 +66,7 @@ type Model struct {
 	activityMode        ActivityMode
 	thinkingVisible     bool
 	progressFrame       int
+	markdownCache       map[int]markdownCacheEntry
 	slashCommands       map[string]SlashCommand
 	slashMatches        []SlashCommand
 	slashMatchIndex     int
@@ -578,7 +586,7 @@ func (m *Model) refreshConversation() {
 				if content == "" && m.streaming && idx == len(m.messages)-1 {
 					content = progressFrames[m.progressFrame] + " " + m.progressLabel()
 				} else {
-					content = renderMarkdown(content, max(1, inner-2))
+					content = m.renderCachedMarkdown(idx, content, max(1, inner-2))
 					if m.streaming && idx == len(m.messages)-1 {
 						content += "\n" + progressFrames[m.progressFrame] + " " + m.progressLabel()
 					}
@@ -607,40 +615,37 @@ func (m *Model) refreshConversation() {
 	m.viewport.SetContent(b.String())
 }
 
-var markdownBold = regexp.MustCompile(`\*\*([^*\n]+)\*\*`)
-var markdownCode = regexp.MustCompile("`([^`\n]+)`")
+func (m *Model) renderCachedMarkdown(index int, content string, width int) string {
+	if cached, ok := m.markdownCache[index]; ok && cached.source == content && cached.width == width {
+		return cached.rendered
+	}
+	rendered := renderMarkdown(content, width)
+	if m.markdownCache == nil {
+		m.markdownCache = make(map[int]markdownCacheEntry)
+	}
+	m.markdownCache[index] = markdownCacheEntry{source: content, width: width, rendered: rendered}
+	return rendered
+}
 
 func renderMarkdown(content string, width int) string {
-	lines := strings.Split(content, "\n")
-	inCode := false
-	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "```") {
-			inCode = !inCode
-			lines[i] = markdownBulletStyle.Render(line)
-			continue
-		}
-		if inCode {
-			lines[i] = markdownBlockStyle.Render(line)
-			continue
-		}
-		if strings.HasPrefix(trimmed, "# ") || strings.HasPrefix(trimmed, "## ") || strings.HasPrefix(trimmed, "### ") {
-			lines[i] = markdownHeadingStyle.Render(strings.TrimLeft(trimmed, "# "))
-			continue
-		}
-		if strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* ") {
-			line = markdownBulletStyle.Render("•") + " " + strings.TrimSpace(trimmed[2:])
-		}
-		line = markdownBold.ReplaceAllStringFunc(line, func(match string) string {
-			return markdownStrongStyle.Render(match[2 : len(match)-2])
-		})
-		line = markdownCode.ReplaceAllStringFunc(line, func(match string) string {
-			return markdownCodeStyle.Render(" " + match[1:len(match)-1] + " ")
-		})
-		lines[i] = line
+	if strings.TrimSpace(content) == "" {
+		return content
 	}
-	return strings.Join(lines, "\n")
+	renderer, err := glamour.NewTermRenderer(glamour.WithStyles(rurushuMarkdownStyle()), glamour.WithWordWrap(width), glamour.WithTableWrap(true))
+	if err != nil {
+		return content
+	}
+	rendered, err := renderer.Render(content)
+	if err != nil {
+		return content
+	}
+	// Bubble Tea's viewport can expose OSC 8 hyperlink control sequences as
+	// stray glyphs. Glamour already renders the destination as visible text,
+	// so remove only the hyperlink controls while preserving ANSI colors.
+	return strings.TrimRight(markdownOSC8.ReplaceAllString(rendered, ""), "\n")
 }
+
+var markdownOSC8 = regexp.MustCompile(`\x1b\]8;[^\x07\x1b]*(?:\x07|\x1b\\)`)
 
 func (m *Model) statusView() string {
 	width := m.frame.Status.Width
@@ -741,6 +746,12 @@ func (m *Model) resolvePermission(approved bool) {
 
 func (m *Model) applyStreamEvent(event provider.StreamEvent) bool {
 	switch event.Type {
+	case provider.EventReplace:
+		m.ensureAssistantMessage()
+		m.messages[len(m.messages)-1].Content = event.Text
+		m.streamAssistantText = event.Text
+		m.thinkingVisible = false
+		m.toolActivity = ""
 	case provider.EventToken:
 		m.ensureAssistantMessage()
 		m.messages[len(m.messages)-1].Content += event.Text

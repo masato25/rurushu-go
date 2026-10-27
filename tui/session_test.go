@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/masato25/rurushu-go/projectstate"
 	"github.com/masato25/rurushu-go/provider"
 )
@@ -39,7 +40,7 @@ func TestProjectSessionRestoreRebuildsExactHistoryAndToolTranscript(t *testing.T
 		t.Fatalf("history mismatch\n got=%#v\nwant=%#v", m.history, history)
 	}
 	m.refreshConversation()
-	view := m.viewport.View()
+	view := ansi.Strip(m.viewport.View())
 	for _, want := range []string{"inspect", "README.md", "path is required", "I could not read it."} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("restored transcript missing %q:\n%s", want, view)

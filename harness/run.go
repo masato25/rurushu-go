@@ -28,6 +28,9 @@ func (c *Client) Run(ctx context.Context, req provider.CompletionRequest, valida
 	var text, reasoning strings.Builder
 	for event := range stream {
 		switch event.Type {
+		case provider.EventReplace:
+			text.Reset()
+			text.WriteString(event.Text)
 		case provider.EventToken:
 			text.WriteString(event.Text)
 		case provider.EventReasoning:
