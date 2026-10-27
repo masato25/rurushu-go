@@ -57,6 +57,7 @@ type Model struct {
 	streamReasoningText string
 	activityMode        ActivityMode
 	thinkingVisible     bool
+	progressFrame       int
 	slashCommands       map[string]SlashCommand
 	slashMatches        []SlashCommand
 	slashMatchIndex     int
@@ -88,6 +89,14 @@ type permissionPromptMsg struct {
 }
 
 type jobRefreshMsg struct{ running int }
+
+type progressTickMsg struct{}
+
+var progressFrames = []string{"◐", "◓", "◑", "◒"}
+
+func progressTick() tea.Cmd {
+	return tea.Tick(160*time.Millisecond, func(time.Time) tea.Msg { return progressTickMsg{} })
+}
 
 const (
 	roleUser      = "user"
@@ -175,7 +184,7 @@ func (m *Model) SetActivityMode(mode ActivityMode) {
 }
 
 func (m *Model) Init() tea.Cmd {
-	cmds := []tea.Cmd{m.composer.Focus()}
+	cmds := []tea.Cmd{m.composer.Focus(), progressTick()}
 	if m.permissionRequests != nil {
 		cmds = append(cmds, waitForPermission(m.permissionRequests))
 	}
@@ -189,6 +198,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
+	case progressTickMsg:
+		if m.streaming {
+			m.progressFrame = (m.progressFrame + 1) % len(progressFrames)
+			m.refreshConversation()
+		}
+		return m, progressTick()
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -352,6 +367,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.thinkingVisible = false
 				m.messages = append(m.messages, Message{Role: roleAssistant})
 				m.streaming = true
+				m.progressFrame = 0
 				m.streamSeq++
 				m.activeStream = m.streamSeq
 				m.followStream = true
@@ -559,7 +575,7 @@ func (m *Model) refreshConversation() {
 			} else {
 				content := message.Content
 				if content == "" && m.streaming && idx == len(m.messages)-1 {
-					content = "…"
+					content = progressFrames[m.progressFrame] + " " + m.progressLabel()
 				}
 				b.WriteString(renderTranscript("·", content, inner, agentMarkerStyle))
 			}
@@ -598,7 +614,7 @@ func (m *Model) statusView() string {
 	if m.toolActivity != "" {
 		state = "  " + m.toolActivity
 	} else if m.streaming {
-		state = "  streaming"
+		state = "  " + progressFrames[m.progressFrame] + " " + m.progressLabel()
 	}
 	if m.runningJobs > 0 {
 		state += "  " + jobCountLabel(m.runningJobs)
@@ -612,6 +628,16 @@ func (m *Model) statusView() string {
 	}
 	details := truncate(model+state, max(1, width-7))
 	return statusNameStyle.Render("rurushu") + mutedStyle.Render("  "+details)
+}
+
+func (m *Model) progressLabel() string {
+	if m.thinkingVisible {
+		return "reasoning"
+	}
+	if m.streamAssistantText != "" {
+		return "responding"
+	}
+	return "waiting for response"
 }
 
 func refreshJobs(manager *jobs.Manager) tea.Cmd {

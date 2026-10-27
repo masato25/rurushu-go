@@ -144,6 +144,36 @@ func TestWorkbenchIsLeftAnchoredAndHasNoLegacyChrome(t *testing.T) {
 	}
 }
 
+func TestProgressSpinnerReflectsStreamPhase(t *testing.T) {
+	m := NewWithStreamer("test", "test", nil)
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.streaming = true
+	m.messages = []Message{{Role: roleAssistant}}
+	m.refreshConversation()
+	if got := m.progressLabel(); got != "waiting for response" {
+		t.Fatalf("initial progress = %q", got)
+	}
+	before := m.progressFrame
+	m.Update(progressTickMsg{})
+	if m.progressFrame == before {
+		t.Fatal("spinner did not advance")
+	}
+	m.applyStreamEvent(provider.StreamEvent{Type: provider.EventReasoning, ReasoningText: "internal"})
+	if got := m.progressLabel(); got != "reasoning" {
+		t.Fatalf("reasoning progress = %q", got)
+	}
+	m.applyStreamEvent(provider.StreamEvent{Type: provider.EventToken, Text: "answer"})
+	if got := m.progressLabel(); got != "responding" {
+		t.Fatalf("response progress = %q", got)
+	}
+	m.finishStream()
+	before = m.progressFrame
+	m.Update(progressTickMsg{})
+	if m.progressFrame != before || m.streaming {
+		t.Fatal("spinner advanced after stream finished")
+	}
+}
+
 func TestOpenAICompatibleStreamAppendsAssistantTokens(t *testing.T) {
 	streamer := &fakeStreamer{events: []provider.StreamEvent{
 		{Type: provider.EventToken, Text: "hello"},
