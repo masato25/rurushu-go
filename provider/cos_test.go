@@ -65,6 +65,30 @@ func TestCOSSessionMappingIsPerRurushuSession(t *testing.T) {
 	}
 }
 
+func TestResolveSessionReusesStoredMappingWhenCOSNewIsSet(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/sessions/cos-existing" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"session": map[string]any{"id": "cos-existing", "endedAt": nil},
+		})
+	}))
+	defer server.Close()
+
+	p := &COSProvider{HomeDir: t.TempDir(), CWD: "/workspace", HTTPClient: server.Client()}
+	p.saveSession("local-existing", "cos-existing")
+	t.Setenv("COS_NEW", "1")
+
+	id, submitted, err := p.resolveSession(context.Background(), server.URL, "token", "local-existing", "follow-up")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != "cos-existing" || submitted {
+		t.Fatalf("resolveSession = (%q, %t), want (cos-existing, false)", id, submitted)
+	}
+}
+
 func TestCorrelateCOSTurn(t *testing.T) {
 	events := []cosEvent{
 		{Seq: 1, Kind: "user_message", InputID: "other"},
@@ -141,45 +165,5 @@ func TestCreateSessionManualFallbackIsAlreadySubmitted(t *testing.T) {
 	}
 	if id != "new" || !submitted {
 		t.Fatalf("createSession = (%q, %t), want (new, true)", id, submitted)
-	}
-}
-
-func TestCOSNewOnlyForcesOncePerLocalSession(t *testing.T) {
-	created := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/v1/sessions/") {
-			_ = json.NewEncoder(w).Encode(map[string]any{"session": map[string]any{"id": "existing"}})
-			return
-		}
-		created++
-		if created == 1 {
-			_ = json.NewEncoder(w).Encode(map[string]any{"activeId": "old", "sessions": []map[string]any{}})
-			return
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"activeId": "new", "sessions": []map[string]any{{"id": "new", "events": 1}}})
-	}))
-	defer server.Close()
-
-	p := &COSProvider{
-		CWD:        t.TempDir(),
-		HomeDir:    t.TempDir(),
-		HTTPClient: server.Client(),
-		AutoSubmit: func(context.Context, string, string, string) (bool, error) { return true, nil },
-		OpenURL:    func(string) error { return nil },
-	}
-	p.saveSession("local", "existing")
-	t.Setenv("COS_NEW", "1")
-	t.Setenv("COS_PROJECT_URL", "https://chatgpt.example/project")
-
-	first, _, err := p.resolveSession(context.Background(), server.URL, "token", "local", "opening prompt")
-	if err != nil {
-		t.Fatal(err)
-	}
-	second, _, err := p.resolveSession(context.Background(), server.URL, "token", "local", "follow-up")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if first != "new" || second != "new" {
-		t.Fatalf("sessions = (%q, %q), want (new, new)", first, second)
 	}
 }

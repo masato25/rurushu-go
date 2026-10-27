@@ -253,13 +253,10 @@ func (p *COSProvider) resolveSession(ctx context.Context, baseURL, token, localI
 	if forced := strings.TrimSpace(os.Getenv("COS_SESSION_ID")); forced != "" {
 		return forced, false, nil
 	}
-	forceNew := os.Getenv("COS_NEW") == "1" || os.Getenv("COS_NEW_SESSION") == "1"
-	if forceNew {
-		if bound := p.boundSession(localID); bound != "" {
-			return bound, false, nil
-		}
+	if bound := p.boundSession(localID); bound != "" {
+		return bound, false, nil
 	}
-	if stored := p.storedSession(localID); stored != "" && !forceNew {
+	if stored := p.storedSession(localID); stored != "" {
 		var data struct {
 			Session cosSession `json:"session"`
 		}
@@ -268,6 +265,9 @@ func (p *COSProvider) resolveSession(ctx context.Context, baseURL, token, localI
 			return stored, false, nil
 		}
 	}
+	// COS_NEW only controls creation for an unbound local Rurushu session.
+	// A resumed local session with an existing mapping must keep using the
+	// previously associated remote COS session.
 	id, submitted, err := p.createSession(ctx, baseURL, token, prompt)
 	if err != nil {
 		return "", false, err
