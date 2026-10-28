@@ -576,11 +576,11 @@ func TestCallPropagatesStreamFailures(t *testing.T) {
 	})
 }
 
-func TestCallRejectsInvalidJSONAfterRetries(t *testing.T) {
-	s := &scripted{outputs: []string{"not json", "{broken", "still not json"}}
+func TestCallRejectsInvalidJSONWithoutReplay(t *testing.T) {
+	s := &scripted{outputs: []string{"not json"}}
 	_, err := call(context.Background(), s, "right", "review")
-	if err == nil || len(s.calls) != 3 {
-		t.Fatalf("expected malformed response after three attempts, got err=%v calls=%d", err, len(s.calls))
+	if err == nil || len(s.calls) != 1 {
+		t.Fatalf("expected one malformed completion with no replay, got err=%v calls=%d", err, len(s.calls))
 	}
 }
 
@@ -617,34 +617,62 @@ func TestParseTurnRejectsNonDecisions(t *testing.T) {
 	}
 }
 
-func TestCallRecoversFromContentReferenceOnly(t *testing.T) {
+func TestCallRecoversContentReferenceOnceWithoutReplayingTask(t *testing.T) {
 	s := &scripted{outputs: []string{
 		`::chatgpt-content-reference{index="0" source_message_id="abc"}`,
-		`{"action":"plan","summary":"continue work","next":"run tests","evidence":"not yet verified"}`,
+		`{"action":"plan","summary":"continue work","next":"run tests","evidence":"already checked"}`,
 	}}
 	turn, err := call(context.Background(), s, "right", "review the goal")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if turn.Action != "plan" || len(s.calls) != 2 {
-		t.Fatalf("failed to recover: %+v calls=%d", turn, len(s.calls))
-	}
-	if len(s.requests) != 2 {
-		t.Fatalf("requests=%d", len(s.requests))
+	if turn.Action != "plan" || len(s.calls) != 2 || len(s.requests) != 2 {
+		t.Fatalf("failed bounded recovery: turn=%+v calls=%d requests=%d", turn, len(s.calls), len(s.requests))
 	}
 	retryPrompt := s.requests[1].Messages[0].Content
 	if strings.Contains(retryPrompt, "review the goal") {
-		t.Fatalf("retry replayed the original task: %q", retryPrompt)
+		t.Fatalf("recovery replayed original task: %q", retryPrompt)
 	}
-	if !strings.Contains(retryPrompt, "Do not repeat or redo the task") {
-		t.Fatalf("retry missing no-replay guard: %q", retryPrompt)
+	if !strings.Contains(retryPrompt, "Do not repeat or redo") {
+		t.Fatalf("recovery missing no-replay guard: %q", retryPrompt)
+	}
+	for i, req := range s.requests {
+		if req.Model != duelModel || req.ReasoningEffort != duelReasoningEffort {
+			t.Fatalf("request %d selection=%q/%q", i, req.Model, req.ReasoningEffort)
+		}
 	}
 }
 
-func TestCallDoesNotRetryForeverOnContentReferences(t *testing.T) {
-	s := &scripted{outputs: []string{"::chatgpt-content-reference", "::chatgpt-content-reference", "::chatgpt-content-reference"}}
+func TestCallMalformedDecisionSendsExactlyOnce(t *testing.T) {
+	s := &scripted{outputs: []string{"not-json"}}
 	_, err := call(context.Background(), s, "right", "review")
-	if err == nil || len(s.calls) != 3 {
-		t.Fatalf("unexpected retry result: %v calls=%d", err, len(s.calls))
+	if err == nil || len(s.calls) != 1 {
+		t.Fatalf("unexpected result: %v calls=%d", err, len(s.calls))
+	}
+}
+
+func TestCallContentReferenceRecoveryStopsAfterOneFollowup(t *testing.T) {
+	s := &scripted{outputs: []string{
+		`::chatgpt-content-reference{index="0" source_message_id="abc"}`,
+		`::chatgpt-content-reference{index="0" source_message_id="def"}`,
+	}}
+	_, err := call(context.Background(), s, "right", "review")
+	if err == nil || len(s.calls) != 2 {
+		t.Fatalf("expected one bounded recovery, got err=%v calls=%d", err, len(s.calls))
+	}
+}
+
+func TestContentReferenceOnlyRejectsQuotedMarker(t *testing.T) {
+	if !contentReferenceOnly(`::chatgpt-content-reference{index="0" source_message_id="abc"}`) {
+		t.Fatal("standalone marker was not recognized")
+	}
+	for _, raw := range []string{
+		`{"action":"plan","evidence":"saw ::chatgpt-content-reference{...}"}`,
+		"The bad response was `::chatgpt-content-reference{...}`.",
+		"::chatgpt-content-reference{index=\"0\"}\nDone",
+	} {
+		if contentReferenceOnly(raw) {
+			t.Fatalf("normal content misclassified as marker-only: %q", raw)
+		}
 	}
 }

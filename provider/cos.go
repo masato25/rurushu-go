@@ -21,8 +21,10 @@ import (
 )
 
 const (
-	cosPollInterval = 600 * time.Millisecond
-	cosIdleTimeout  = 108 * time.Second
+	cosPollInterval             = 600 * time.Millisecond
+	cosSessionDiscoveryInterval = 1200 * time.Millisecond
+	cosHandoffPollInterval      = 2 * time.Second
+	cosIdleTimeout              = 108 * time.Second
 )
 
 // COSProvider connects Rurushu to the Chat On Steroids local Control API.
@@ -34,8 +36,35 @@ type COSProvider struct {
 	AutoSubmit func(ctx context.Context, projectURL, prompt, projectName string) (bool, error)
 	OpenURL    func(string) error
 
+	// Test hooks. Zero keeps production defaults. Keeping timing on the
+	// provider instance avoids package-global mutation/races in parallel tests.
+	pollInterval             time.Duration
+	sessionDiscoveryInterval time.Duration
+	handoffPollInterval      time.Duration
+
 	mu       sync.Mutex
 	bindings map[string]string
+}
+
+func (p *COSProvider) pollDelay() time.Duration {
+	if p.pollInterval > 0 {
+		return p.pollInterval
+	}
+	return cosPollInterval
+}
+
+func (p *COSProvider) discoveryDelay() time.Duration {
+	if p.sessionDiscoveryInterval > 0 {
+		return p.sessionDiscoveryInterval
+	}
+	return cosSessionDiscoveryInterval
+}
+
+func (p *COSProvider) handoffDelay() time.Duration {
+	if p.handoffPollInterval > 0 {
+		return p.handoffPollInterval
+	}
+	return cosHandoffPollInterval
 }
 
 func NewCOSProvider(cwd string) *COSProvider {
@@ -134,11 +163,15 @@ func (p *COSProvider) Stream(ctx context.Context, req CompletionRequest) (<-chan
 	}
 
 	out := make(chan StreamEvent)
-	go p.runStream(ctx, out, baseURL, token, sessionID, prompt, alreadySubmitted)
+	go p.runStreamSelected(ctx, out, baseURL, token, sessionID, prompt, alreadySubmitted, req.Model, req.ReasoningEffort)
 	return out, nil
 }
 
 func (p *COSProvider) runStream(ctx context.Context, out chan<- StreamEvent, baseURL, token, sessionID, prompt string, alreadySubmitted bool) {
+	p.runStreamSelected(ctx, out, baseURL, token, sessionID, prompt, alreadySubmitted, "", "")
+}
+
+func (p *COSProvider) runStreamSelected(ctx context.Context, out chan<- StreamEvent, baseURL, token, sessionID, prompt string, alreadySubmitted bool, model, reasoningEffort string) {
 	defer close(out)
 	// COS retains the same session ID across Compact & Resume. Never submit a
 	// follow-up into its source chat while the rebind transaction is in flight.
@@ -156,9 +189,8 @@ func (p *COSProvider) runStream(ctx context.Context, out chan<- StreamEvent, bas
 			if err == nil {
 				nextFrom = cursor
 			}
-			status, body, err := p.request(ctx, http.MethodPost, baseURL+"/v1/inputs", token, map[string]any{
-				"id": inputID, "sessionId": sessionID, "text": prompt,
-			})
+			payload := cosInputPayload(inputID, sessionID, prompt, model, reasoningEffort)
+			status, body, err := p.request(ctx, http.MethodPost, baseURL+"/v1/inputs", token, payload)
 			if err == nil && status >= 200 && status < 300 {
 				break
 			}
@@ -166,7 +198,7 @@ func (p *COSProvider) runStream(ctx context.Context, out chan<- StreamEvent, bas
 				p.emitError(out, fmt.Errorf("Chat On Steroids input error (%d): %s", status, strings.TrimSpace(body)))
 				return
 			}
-			if !sleepContext(ctx, cosPollInterval) {
+			if !sleepContext(ctx, p.pollDelay()) {
 				p.emitError(out, ctx.Err())
 				return
 			}
@@ -193,7 +225,7 @@ func (p *COSProvider) runStream(ctx context.Context, out chan<- StreamEvent, bas
 	lastActivity := time.Now()
 	startedWaiting := lastActivity
 	for {
-		if !sleepContext(ctx, cosPollInterval) {
+		if !sleepContext(ctx, p.pollDelay()) {
 			p.cancelInput(baseURL, token, inputID)
 			p.emitError(out, ctx.Err())
 			return
@@ -233,13 +265,17 @@ func (p *COSProvider) runStream(ctx context.Context, out chan<- StreamEvent, bas
 			fresh := event.Seq > lastMatchedSeq
 			if fresh {
 				lastMatchedSeq = event.Seq
+				// Any fresh event owned by the correlated native turn proves the
+				// turn is still settling. In particular, COS may journal tool/page
+				// activity around a turn_end boundary; counting only assistant text
+				// as activity can close the Rurushu stream while ChatGPT still works.
+				matchingUpdate = true
 			}
 			lastActivity = time.Now()
 			switch event.Kind {
 			case "turn_end":
 				turnEnded = true
 				turnOutcome = event.Outcome
-				matchingUpdate = matchingUpdate || fresh
 			case "tool_call":
 				if event.Tool != nil && !seenTools[event.Tool.CallID] {
 					seenTools[event.Tool.CallID] = true
@@ -251,7 +287,6 @@ func (p *COSProvider) runStream(ctx context.Context, out chan<- StreamEvent, bas
 					emitSnapshot()
 				}
 			case "assistant_message":
-				matchingUpdate = matchingUpdate || fresh
 				if event.Message == nil {
 					continue
 				}
@@ -280,6 +315,22 @@ func (p *COSProvider) runStream(ctx context.Context, out chan<- StreamEvent, bas
 				quietAfterEnd++
 			}
 			if quietAfterEnd >= 2 {
+				// The append-only journal and live browser projection can settle at
+				// slightly different times. A recorded turn_end is not sufficient to
+				// stop the single-chat UI while COS still reports this exact native
+				// turn as active. Keep the provider channel open so the TUI spinner and
+				// subsequent response/tool snapshots continue to flow.
+				active, liveErr := p.cosTurnActive(ctx, baseURL, token, sessionID, remoteTurnID, startedWaiting)
+				if liveErr != nil {
+					if time.Since(lastActivity) > cosIdleTimeout {
+						p.emitError(out, fmt.Errorf("cannot verify Chat On Steroids turn completion after turn_end (turn=%q): %w", remoteTurnID, liveErr))
+						return
+					}
+					continue
+				}
+				if active {
+					continue
+				}
 				if turnOutcome != "" && turnOutcome != "completed" {
 					p.emitError(out, fmt.Errorf("Chat On Steroids turn ended with outcome %q (turn=%q); refusing automatic replay", turnOutcome, remoteTurnID))
 					return
@@ -298,12 +349,28 @@ func (p *COSProvider) runStream(ctx context.Context, out chan<- StreamEvent, bas
 	}
 }
 
+func cosInputPayload(inputID, sessionID, prompt, model, reasoningEffort string) map[string]any {
+	payload := map[string]any{"id": inputID, "sessionId": sessionID, "text": prompt}
+	model = strings.TrimSpace(model)
+	reasoningEffort = strings.TrimSpace(reasoningEffort)
+	if model != "" && model != "chatgpt-web" && reasoningEffort != "" {
+		payload["model"] = model
+		payload["reasoningEffort"] = reasoningEffort
+	}
+	return payload
+}
+
 // A live native turn may legitimately have no journal events during extended
 // reasoning or tool execution. Keep waiting only if COS confirms the exact
 // correlated turn is active, with an absolute bound against stuck generations.
 func (p *COSProvider) cosTurnStillActive(ctx context.Context, baseURL, token, sessionID, turnID string, started time.Time) bool {
+	active, err := p.cosTurnActive(ctx, baseURL, token, sessionID, turnID, started)
+	return err == nil && active
+}
+
+func (p *COSProvider) cosTurnActive(ctx context.Context, baseURL, token, sessionID, turnID string, started time.Time) (bool, error) {
 	if turnID == "" || time.Since(started) >= 20*time.Minute {
-		return false
+		return false, nil
 	}
 	var detail struct {
 		Live *struct {
@@ -311,9 +378,9 @@ func (p *COSProvider) cosTurnStillActive(ctx context.Context, baseURL, token, se
 		} `json:"live"`
 	}
 	if err := p.getJSON(ctx, baseURL+"/v1/sessions/"+url.PathEscape(sessionID)+"?live=1", token, &detail); err != nil {
-		return false
+		return false, err
 	}
-	return detail.Live != nil && detail.Live.ActiveTurnID == turnID
+	return detail.Live != nil && detail.Live.ActiveTurnID == turnID, nil
 }
 
 func (p *COSProvider) waitForHandoff(ctx context.Context, baseURL, token, sessionID string) error {
@@ -343,7 +410,7 @@ func (p *COSProvider) waitForHandoff(ctx context.Context, baseURL, token, sessio
 			return ctx.Err()
 		case <-deadline.C:
 			return errors.New("COS Compact & Resume remains in progress after 10 minutes; follow-up not sent")
-		case <-time.After(2 * time.Second):
+		case <-time.After(p.handoffDelay()):
 		}
 	}
 }
@@ -461,7 +528,7 @@ func (p *COSProvider) createSession(ctx context.Context, baseURL, token, prompt 
 		p.logf("[cos] Opening prompt submitted in Chrome.\n")
 	}
 
-	ticker := time.NewTicker(1200 * time.Millisecond)
+	ticker := time.NewTicker(p.discoveryDelay())
 	defer ticker.Stop()
 	timeout := time.NewTimer(90 * time.Second)
 	defer timeout.Stop()

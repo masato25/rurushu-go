@@ -45,6 +45,11 @@ type realClock struct{}
 func (realClock) Now() time.Time                         { return time.Now() }
 func (realClock) After(d time.Duration) <-chan time.Time { return time.After(d) }
 
+const (
+	duelModel           = "gpt-5-6"
+	duelReasoningEffort = "medium"
+)
+
 // RecurringOptions runs one RIGHT decision per poll tick. RIGHT plan/research
 // decisions are executed by LEFT in the same tick; wait schedules another
 // RIGHT-only observation tick; blocked/propose_review stop for owner input.
@@ -58,31 +63,32 @@ type RecurringOptions struct {
 }
 
 func call(ctx context.Context, s Streamer, id, prompt string) (Turn, error) {
-	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
-		turn, err := callOnce(ctx, s, id, prompt)
-		if err == nil {
-			return turn, nil
-		}
-		lastErr = err
-		if ctx.Err() != nil {
-			return Turn{}, ctx.Err()
-		}
-		var malformed *decisionFormatError
-		if !errors.As(err, &malformed) {
-			return Turn{}, err
-		}
-		prompt = "Your previous reply was not a machine-readable decision (it may have been only a content-reference marker). Do not repeat or redo the task. Reply only with the final decision for the work you already completed, as ONE complete JSON object containing action, summary, next, evidence. No tools, markdown, citations or explanation outside JSON."
+	turn, err := callOnce(ctx, s, id, prompt)
+	if err == nil || ctx.Err() != nil {
+		return turn, err
 	}
-	return Turn{}, lastErr
+	var malformed *decisionFormatError
+	if !errors.As(err, &malformed) || !contentReferenceOnly(malformed.raw) {
+		return Turn{}, err
+	}
+	// One bounded recovery is allowed only for the known COS/DIL failure mode.
+	// Never replay the task itself and never retry arbitrary malformed prose:
+	// LEFT may already have completed real work in the previous native turn.
+	return callOnce(ctx, s, id, "Your previous response rendered as an empty content-reference placeholder. Do not repeat or redo any task or tool work. Reply only with the final decision for the work already completed as ONE JSON object containing action, summary, next, evidence. No markdown, tools, citations, or explanation outside JSON.")
 }
 
-type decisionFormatError struct{ text string }
+type decisionFormatError struct {
+	text string
+	raw  string
+}
 
 func (e *decisionFormatError) Error() string { return e.text }
 
 func callOnce(ctx context.Context, s Streamer, id, prompt string) (Turn, error) {
-	events, err := s.Stream(ctx, provider.CompletionRequest{Model: "chatgpt-web", SessionID: id, Messages: []provider.Message{{Role: provider.RoleUser, Content: prompt}}})
+	events, err := s.Stream(ctx, provider.CompletionRequest{
+		Model: duelModel, ReasoningEffort: duelReasoningEffort, SessionID: id,
+		Messages: []provider.Message{{Role: provider.RoleUser, Content: prompt}},
+	})
 	if err != nil {
 		return Turn{}, err
 	}
@@ -113,6 +119,25 @@ func callOnce(ctx context.Context, s Streamer, id, prompt string) (Turn, error) 
 	return parseTurn(output.String())
 }
 
+func contentReferenceOnly(raw string) bool {
+	rest := strings.TrimSpace(raw)
+	found := false
+	for rest != "" {
+		const prefix = "::chatgpt-content-reference{"
+		if !strings.HasPrefix(rest, prefix) {
+			return false
+		}
+		end := strings.IndexByte(rest[len(prefix):], '}')
+		if end < 0 {
+			return false
+		}
+		end += len(prefix)
+		found = true
+		rest = strings.TrimSpace(rest[end+1:])
+	}
+	return found
+}
+
 // COS can include tool activity and intermediate messages before the final
 // assistant response. Scan for complete JSON objects and use the last valid
 // decision, rather than parsing the full mixed transcript as one JSON value.
@@ -134,7 +159,7 @@ func parseTurn(raw string) (Turn, error) {
 		last, found = turn, true
 	}
 	if !found {
-		return Turn{}, &decisionFormatError{text: fmt.Sprintf("COS response has no complete decision JSON: %.200s", strings.TrimSpace(raw))}
+		return Turn{}, &decisionFormatError{text: fmt.Sprintf("COS response has no complete decision JSON: %.200s", strings.TrimSpace(raw)), raw: raw}
 	}
 	return last, nil
 }

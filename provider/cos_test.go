@@ -14,6 +14,17 @@ import (
 	"time"
 )
 
+const testCOSPollInterval = 2 * time.Millisecond
+
+func fastCOSProvider(client *http.Client) *COSProvider {
+	return &COSProvider{
+		HTTPClient:               client,
+		pollInterval:             testCOSPollInterval,
+		sessionDiscoveryInterval: testCOSPollInterval,
+		handoffPollInterval:      testCOSPollInterval,
+	}
+}
+
 func TestFormatCOSPrompt(t *testing.T) {
 	req := CompletionRequest{Messages: []Message{
 		{Role: RoleSystem, Content: "instructions"},
@@ -51,7 +62,7 @@ func TestCOSWaitForHandoff(t *testing.T) {
 				_, _ = w.Write([]byte(tc.body))
 			}))
 			defer server.Close()
-			p := &COSProvider{HTTPClient: server.Client()}
+			p := fastCOSProvider(server.Client())
 			err := p.waitForHandoff(context.Background(), server.URL, "token", "cos-left")
 			if tc.wantError == "" && err != nil {
 				t.Fatal(err)
@@ -70,7 +81,7 @@ func TestCOSWaitForHandoffRespectsCancellation(t *testing.T) {
 	defer server.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 	defer cancel()
-	p := &COSProvider{HTTPClient: server.Client()}
+	p := fastCOSProvider(server.Client())
 	if err := p.waitForHandoff(ctx, server.URL, "token", "cos-left"); err == nil {
 		t.Fatal("in-progress handoff should not silently submit after cancellation")
 	}
@@ -85,7 +96,7 @@ func TestCOSTurnStillActiveRequiresMatchingLiveTurn(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"live": map[string]any{"activeTurnId": active}})
 	}))
 	defer server.Close()
-	p := &COSProvider{HTTPClient: server.Client()}
+	p := fastCOSProvider(server.Client())
 	ctx := context.Background()
 	start := time.Now()
 	if !p.cosTurnStillActive(ctx, server.URL, "token", "cos-left", "turn-left", start) {
@@ -302,6 +313,10 @@ func TestCorrelateCOSTurn(t *testing.T) {
 
 func TestCOSStreamWaitsForTurnEndAfterFinalAssistantMessage(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("live") == "1" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"live": map[string]any{"activeTurnId": ""}})
+			return
+		}
 		if !strings.Contains(r.URL.Path, "/events") {
 			t.Errorf("unexpected request: %s", r.URL.Path)
 		}
@@ -320,7 +335,7 @@ func TestCOSStreamWaitsForTurnEndAfterFinalAssistantMessage(t *testing.T) {
 	defer server.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	p := &COSProvider{HTTPClient: server.Client()}
+	p := fastCOSProvider(server.Client())
 	out := make(chan StreamEvent)
 	go p.runStream(ctx, out, server.URL, "token", "session-1", "prompt", true)
 	var response strings.Builder
@@ -354,7 +369,7 @@ func TestCOSStreamHandlesRevisedMessageSnapshots(t *testing.T) {
 	defer server.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	p := &COSProvider{HTTPClient: server.Client()}
+	p := fastCOSProvider(server.Client())
 	out := make(chan StreamEvent)
 	go p.runStream(ctx, out, server.URL, "token", "session-1", "prompt", true)
 	var last string
@@ -389,7 +404,7 @@ func TestCOSStreamReceivesFinalSnapshotAfterTurnEnd(t *testing.T) {
 	defer server.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	p := &COSProvider{HTTPClient: server.Client()}
+	p := fastCOSProvider(server.Client())
 	out := make(chan StreamEvent)
 	go p.runStream(ctx, out, server.URL, "token", "session-1", "prompt", true)
 	var last string
@@ -422,7 +437,7 @@ func TestCOSStreamRejectsInterruptedTurnEnd(t *testing.T) {
 	defer server.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
-	p := &COSProvider{HTTPClient: server.Client()}
+	p := fastCOSProvider(server.Client())
 	out := make(chan StreamEvent)
 	go p.runStream(ctx, out, server.URL, "token", "session-1", "prompt", true)
 	var gotError bool
@@ -436,6 +451,163 @@ func TestCOSStreamRejectsInterruptedTurnEnd(t *testing.T) {
 	}
 	if !gotError {
 		t.Fatal("expected interrupted turn error")
+	}
+}
+
+func TestCOSInputPayloadForwardsExplicitModelSelection(t *testing.T) {
+	payload := cosInputPayload("input", "session", "prompt", "gpt-5-6", "medium")
+	if payload["model"] != "gpt-5-6" || payload["reasoningEffort"] != "medium" {
+		t.Fatalf("selection not forwarded: %#v", payload)
+	}
+	legacy := cosInputPayload("input", "session", "prompt", "chatgpt-web", "medium")
+	if _, ok := legacy["model"]; ok {
+		t.Fatalf("provider pseudo-model must not be sent to COS: %#v", legacy)
+	}
+	if _, ok := legacy["reasoningEffort"]; ok {
+		t.Fatalf("reasoning effort without a real model must not be sent: %#v", legacy)
+	}
+}
+
+func TestCOSStreamFreshToolActivityResetsPostEndQuietWindow(t *testing.T) {
+	var polls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("live") == "1" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"live": map[string]any{"activeTurnId": ""}})
+			return
+		}
+		poll := polls.Add(1)
+		events := []map[string]any{}
+		switch poll {
+		case 1:
+			events = []map[string]any{
+				{"seq": 1, "kind": "user_message", "inputId": "opening"},
+				{"seq": 2, "kind": "turn_start", "turnId": "turn-1"},
+				{"seq": 3, "kind": "turn_end", "turnId": "turn-1", "outcome": "completed"},
+			}
+		case 2:
+			events = []map[string]any{
+				{"seq": 4, "kind": "tool_call", "turnId": "turn-1", "tool": map[string]any{"callId": "tool-1", "name": "exec"}},
+			}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"nextFrom": 5, "events": events})
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+	p := fastCOSProvider(server.Client())
+	out := make(chan StreamEvent)
+	go p.runStream(ctx, out, server.URL, "token", "session-1", "prompt", true)
+	done := false
+	for ev := range out {
+		if ev.Type == EventError {
+			t.Fatal(ev.Error)
+		}
+		if ev.Type == EventDone {
+			done = true
+		}
+	}
+	if !done {
+		t.Fatal("expected completed stream")
+	}
+	if polls.Load() < 4 {
+		t.Fatalf("fresh tool activity did not reset quiet window; polls=%d", polls.Load())
+	}
+}
+
+func TestCOSStreamDoesNotFinishWhileExactLiveTurnRemainsActive(t *testing.T) {
+	var eventPolls atomic.Int32
+	var liveChecks atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("live") == "1" {
+			check := liveChecks.Add(1)
+			active := ""
+			if check <= 2 {
+				active = "turn-1"
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"live": map[string]any{"activeTurnId": active}})
+			return
+		}
+		poll := eventPolls.Add(1)
+		events := []map[string]any{}
+		if poll == 1 {
+			events = []map[string]any{
+				{"seq": 1, "kind": "user_message", "inputId": "opening"},
+				{"seq": 2, "kind": "turn_start", "turnId": "turn-1"},
+				{"seq": 3, "kind": "turn_end", "turnId": "turn-1", "outcome": "completed"},
+			}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"nextFrom": 4, "events": events})
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	p := fastCOSProvider(server.Client())
+	out := make(chan StreamEvent)
+	go p.runStream(ctx, out, server.URL, "token", "session-1", "prompt", true)
+	done := false
+	for ev := range out {
+		if ev.Type == EventError {
+			t.Fatal(ev.Error)
+		}
+		if ev.Type == EventDone {
+			done = true
+		}
+	}
+	if !done {
+		t.Fatal("expected completed stream after live turn cleared")
+	}
+	if liveChecks.Load() < 3 {
+		t.Fatalf("stream finished before exact live turn cleared; live checks=%d", liveChecks.Load())
+	}
+}
+
+func TestCOSStreamDoesNotTreatLiveProbeFailureAsCompletion(t *testing.T) {
+	var eventPolls atomic.Int32
+	var liveChecks atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("live") == "1" {
+			check := liveChecks.Add(1)
+			if check <= 2 {
+				http.Error(w, "temporary live read failure", http.StatusServiceUnavailable)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"live": map[string]any{"activeTurnId": ""}})
+			return
+		}
+		poll := eventPolls.Add(1)
+		events := []map[string]any{}
+		if poll == 1 {
+			events = []map[string]any{
+				{"seq": 1, "kind": "user_message", "inputId": "opening"},
+				{"seq": 2, "kind": "turn_start", "turnId": "turn-1"},
+				{"seq": 3, "kind": "turn_end", "turnId": "turn-1", "outcome": "completed"},
+			}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"nextFrom": 4, "events": events})
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	p := fastCOSProvider(server.Client())
+	out := make(chan StreamEvent)
+	go p.runStream(ctx, out, server.URL, "token", "session-1", "prompt", true)
+	done := false
+	for ev := range out {
+		if ev.Type == EventError {
+			t.Fatal(ev.Error)
+		}
+		if ev.Type == EventDone {
+			done = true
+		}
+	}
+	if !done {
+		t.Fatal("expected completed stream after live probe recovered")
+	}
+	if liveChecks.Load() < 3 {
+		t.Fatalf("stream treated a failed live probe as completion; checks=%d", liveChecks.Load())
 	}
 }
 
@@ -459,10 +631,11 @@ func TestCreateSessionReturnsAlreadySubmitted(t *testing.T) {
 	defer server.Close()
 
 	p := &COSProvider{
-		CWD:        t.TempDir(),
-		HTTPClient: server.Client(),
-		AutoSubmit: func(context.Context, string, string, string) (bool, error) { return true, nil },
-		OpenURL:    func(string) error { t.Fatal("fallback browser open should not run"); return nil },
+		CWD:                      t.TempDir(),
+		HTTPClient:               server.Client(),
+		sessionDiscoveryInterval: testCOSPollInterval,
+		AutoSubmit:               func(context.Context, string, string, string) (bool, error) { return true, nil },
+		OpenURL:                  func(string) error { t.Fatal("fallback browser open should not run"); return nil },
 	}
 	t.Setenv("COS_PROJECT_URL", "https://chatgpt.example/project")
 	id, submitted, err := p.createSession(context.Background(), server.URL, "token", "opening prompt")
@@ -488,10 +661,11 @@ func TestCreateSessionManualFallbackIsAlreadySubmitted(t *testing.T) {
 	defer server.Close()
 
 	p := &COSProvider{
-		CWD:        t.TempDir(),
-		HTTPClient: server.Client(),
-		AutoSubmit: func(context.Context, string, string, string) (bool, error) { return false, nil },
-		OpenURL:    func(string) error { opened = true; return nil },
+		CWD:                      t.TempDir(),
+		HTTPClient:               server.Client(),
+		sessionDiscoveryInterval: testCOSPollInterval,
+		AutoSubmit:               func(context.Context, string, string, string) (bool, error) { return false, nil },
+		OpenURL:                  func(string) error { opened = true; return nil },
 	}
 	t.Setenv("COS_PROJECT_URL", "https://chatgpt.example/project")
 	id, submitted, err := p.createSession(context.Background(), server.URL, "token", "opening prompt")
