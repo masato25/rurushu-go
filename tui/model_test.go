@@ -9,9 +9,44 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
+	rurushuconfig "github.com/masato25/rurushu-go/config"
 	"github.com/masato25/rurushu-go/permission"
 	"github.com/masato25/rurushu-go/provider"
 )
+
+func TestF2SetupFromChatAndReturnWithoutQuitting(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	cfg := rurushuconfig.Defaults()
+	cfg.Model = "original-model"
+	if _, err := rurushuconfig.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	m := NewWithStreamer("original-model", "cos", &fakeStreamer{})
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 35})
+	m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyF2}))
+	if m.setup == nil || !strings.Contains(ansi.Strip(m.View().Content), "rurushu setup") {
+		t.Fatal("F2 did not open setup")
+	}
+	m.setup.inputs[setupModel].SetValue("updated-model")
+	m.setup.focus = setupFieldCount - 1
+	m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	if !m.setup.saved {
+		t.Fatal("setup was not saved")
+	}
+	loaded, err := rurushuconfig.Load()
+	if err != nil || loaded.Model != "updated-model" {
+		t.Fatalf("saved model: %+v %v", loaded, err)
+	}
+	m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	if m.setup != nil {
+		t.Fatal("Enter after save did not return to chat")
+	}
+	m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyF2}))
+	m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
+	if m.setup != nil {
+		t.Fatal("Esc did not dismiss setup")
+	}
+}
 
 type fakeStreamer struct {
 	events []provider.StreamEvent

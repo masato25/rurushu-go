@@ -13,6 +13,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/glamour/v2"
 	"charm.land/lipgloss/v2"
+	rurushuconfig "github.com/masato25/rurushu-go/config"
 	"github.com/masato25/rurushu-go/jobs"
 	"github.com/masato25/rurushu-go/permission"
 	"github.com/masato25/rurushu-go/projectstate"
@@ -77,6 +78,7 @@ type Model struct {
 	sessionStore        *projectstate.Store
 	sessionID           string
 	sessionSaveError    string
+	setup               *SetupModel
 }
 
 type streamStartedMsg struct {
@@ -217,6 +219,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.layout()
+		if m.setup != nil {
+			m.setup.Update(msg)
+		}
 		return m, nil
 
 	case streamStartedMsg:
@@ -279,6 +284,34 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, waitForStreamEvent(msg.id, msg.stream)
 
 	case tea.KeyPressMsg:
+		if m.setup != nil {
+			switch msg.String() {
+			case "esc", "f2":
+				m.setup = nil
+				return m, nil
+			case "ctrl+c":
+				return m, tea.Quit
+			}
+			if m.setup.saved {
+				if msg.String() == "enter" {
+					m.setup = nil
+				}
+				return m, nil
+			}
+			_, cmd := m.setup.Update(msg)
+			return m, cmd
+		}
+		if msg.String() == "f2" && m.pendingPermission == nil {
+			cfg, err := rurushuconfig.Load()
+			if err != nil {
+				m.sessionSaveError = err.Error()
+				return m, nil
+			}
+			m.setup = NewSetupModel(cfg)
+			m.setup.embedded = true
+			m.setup.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+			return m, m.setup.Init()
+		}
 		if m.pendingPermission != nil {
 			switch msg.String() {
 			case "ctrl+c":
@@ -428,6 +461,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) View() tea.View {
+	if m.setup != nil {
+		return m.setup.View()
+	}
 	if m.width <= 0 || m.height <= 0 {
 		v := tea.NewView("starting…")
 		v.AltScreen = true

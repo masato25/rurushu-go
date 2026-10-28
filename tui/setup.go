@@ -13,14 +13,15 @@ import (
 )
 
 type SetupModel struct {
-	width  int
-	height int
-	inputs []textinput.Model
-	focus  int
-	config rurushuconfig.Config
-	saved  bool
-	path   string
-	err    error
+	width    int
+	height   int
+	inputs   []textinput.Model
+	focus    int
+	config   rurushuconfig.Config
+	saved    bool
+	path     string
+	err      error
+	embedded bool
 }
 
 const (
@@ -151,9 +152,13 @@ func (m *SetupModel) save() error {
 
 func (m *SetupModel) View() tea.View {
 	if m.saved {
+		instruction := "press Enter to exit"
+		if m.embedded {
+			instruction = "press Enter to return to chat (restart to apply changed runtime settings)"
+		}
 		content := statusNameStyle.Render("rurushu setup") + "\n\n" +
 			"saved configuration\n" + mutedStyle.Render(m.path) + "\n\n" +
-			mutedStyle.Render("press Enter to exit")
+			mutedStyle.Render(instruction)
 		view := tea.NewView(content)
 		view.AltScreen = true
 		view.WindowTitle = "Rurushu Setup"
@@ -179,7 +184,11 @@ func (m *SetupModel) View() tea.View {
 	if m.err != nil {
 		b.WriteString(lipgloss.NewStyle().Bold(true).Render("error: ") + m.err.Error() + "\n\n")
 	}
-	b.WriteString(mutedStyle.Render("Tab/↓ next  Shift+Tab/↑ previous  Enter advance/save  Esc cancel"))
+	footer := "Tab/↓ next  Shift+Tab/↑ previous  Enter advance/save  Esc cancel"
+	if m.embedded {
+		footer = "Tab/↓ next  Shift+Tab/↑ previous  Enter advance/save  Esc/F2 back to chat"
+	}
+	b.WriteString(mutedStyle.Render(footer))
 
 	content := b.String()
 	if m.width > 0 {
