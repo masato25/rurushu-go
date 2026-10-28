@@ -73,6 +73,13 @@ go run ./cmd/rurushu --model <model-name> "summarize what I should work on"
 
 ### Interactive terminal workspace (F4)
 
+### Project file browser (F5)
+
+Press **F5** in the regular chat TUI to open a read-only project file browser. The right pane navigates folders and files; the left pane previews UTF-8 text, code, and rendered Markdown (`.md`/`.markdown`). Press **Tab** to switch panes, **↑/↓** to select files or scroll preview, **Enter** to enter a folder, **Backspace** for its parent, **r** to refresh, and **F5/Esc** to return to chat. Symlinks, binary files, and files larger than 512 KiB are not previewed.
+
+The preview includes line numbers. For text and source code these correspond to file lines; for rendered Markdown they number the displayed rows rather than the original Markdown source lines.
+
+
 From the regular chat TUI press **F4** to open an embedded PTY shell on the left with a session panel on the right. Press **Enter** to focus the shell, **Ctrl+]** to release keyboard focus, and **F4** or **Esc** while unfocused to return to chat. **Ctrl+C** while focused goes to the subprocess, not to Rurushu. Terminal output and scrolling remain in the TUI alternate screen.
 
 There is **one shared interactive shell** for this Rurushu process. F4 hides or reopens the same PTY without stopping running programs. The PTY closes when Rurushu itself exits; it is not a persistent daemon. Existing managed background jobs continue to use the separate job manager.

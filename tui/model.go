@@ -82,6 +82,7 @@ type Model struct {
 	sessionSaveError    string
 	setup               *SetupModel
 	review              *reviewModel
+	browser             *fileBrowser
 	terminal            *terminalWorkspace
 	terminalService     *TerminalService
 	terminalVisible     bool
@@ -221,6 +222,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tea.MouseWheelMsg:
+		if m.browser != nil {
+			m.browser.wheel(msg.Button)
+			return m, nil
+		}
 		if m.terminalVisible && m.terminal != nil {
 			return m, m.terminal.update(msg)
 		}
@@ -337,6 +342,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, waitForStreamEvent(msg.id, msg.stream)
 
 	case tea.KeyPressMsg:
+		if m.browser != nil {
+			if msg.String() == "f5" || msg.String() == "esc" {
+				m.browser = nil
+				return m, nil
+			}
+			m.browser.key(msg.String())
+			return m, nil
+		}
+		if msg.String() == "f5" && m.pendingPermission == nil && m.review == nil && m.setup == nil && !m.terminalVisible {
+			m.browser = newFileBrowser(m.terminalCWD())
+			return m, nil
+		}
 		if m.terminalVisible && m.terminal != nil {
 			if msg.String() == "f4" || (!m.terminal.focused && msg.String() == "esc") {
 				m.terminal.terminal.Blur()
@@ -551,6 +568,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) View() tea.View {
+	if m.browser != nil {
+		return m.browser.view(m.width, m.height)
+	}
 	if m.terminalVisible && m.terminal != nil {
 		return m.terminal.view(m.width, m.height)
 	}

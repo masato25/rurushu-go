@@ -33,7 +33,13 @@ type TerminalService struct {
 func NewTerminalService(cwd string) *TerminalService { return &TerminalService{cwd: cwd} }
 
 func (m *Model) SetTerminalService(service *TerminalService) { m.terminalService = service }
-func (m *Model) terminalCWD() string                         { cwd, _ := os.Getwd(); return cwd }
+func (m *Model) terminalCWD() string {
+	if m.terminalService != nil && m.terminalService.cwd != "" {
+		return m.terminalService.cwd
+	}
+	cwd, _ := os.Getwd()
+	return cwd
+}
 
 func (s *TerminalService) attach(width, height int) (*terminalWorkspace, tea.Cmd, error) {
 	s.mu.Lock()
