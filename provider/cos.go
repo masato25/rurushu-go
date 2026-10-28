@@ -581,8 +581,14 @@ func (p *COSProvider) projectConfig() cosProjectConfig {
 	if home == "" {
 		home, _ = os.UserHomeDir()
 	}
-	merged := readCOSConfig(filepath.Join(home, ".rurushugo", "cos.json"))
-	local := readCOSConfig(filepath.Join(p.CWD, ".rurushugo", "cos.json"))
+	merged := readCOSConfigWithLegacyFallback(
+		filepath.Join(home, ".rurushu", "cos.json"),
+		filepath.Join(home, ".rurushugo", "cos.json"),
+	)
+	local := readCOSConfigWithLegacyFallback(
+		filepath.Join(p.CWD, ".rurushu", "cos.json"),
+		filepath.Join(p.CWD, ".rurushugo", "cos.json"),
+	)
 	if local.Project != "" {
 		merged.Project = local.Project
 	}
@@ -596,6 +602,13 @@ func (p *COSProvider) projectConfig() cosProjectConfig {
 		merged.ProjectURL = value
 	}
 	return merged
+}
+
+func readCOSConfigWithLegacyFallback(path, legacyPath string) cosProjectConfig {
+	if _, err := os.Stat(path); err == nil {
+		return readCOSConfig(path)
+	}
+	return readCOSConfig(legacyPath)
 }
 
 func readCOSConfig(path string) cosProjectConfig {
@@ -614,7 +627,7 @@ func (p *COSProvider) projectURL(cfg cosProjectConfig) (string, error) {
 		return cfg.ProjectURL, nil
 	}
 	if runtime.GOOS != "darwin" || cfg.Project == "" {
-		return "", errors.New("COS projectUrl is required in .rurushugo/cos.json or COS_PROJECT_URL")
+		return "", errors.New("COS projectUrl is required in .rurushu/cos.json or COS_PROJECT_URL")
 	}
 	script := fmt.Sprintf(`tell application "Google Chrome" to get URL of every tab of every window`)
 	output, err := exec.Command("osascript", "-e", script).Output()

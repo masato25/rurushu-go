@@ -163,13 +163,34 @@ func TestCOSProjectConfigPrecedence(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	writeJSON(filepath.Join(home, ".rurushugo", "cos.json"), `{"project":"global","projectUrl":"https://global"}`)
-	writeJSON(filepath.Join(cwd, ".rurushugo", "cos.json"), `{"project":"local"}`)
+	writeJSON(filepath.Join(home, ".rurushu", "cos.json"), `{"project":"global","projectUrl":"https://global"}`)
+	writeJSON(filepath.Join(cwd, ".rurushu", "cos.json"), `{"project":"local"}`)
 	writeJSON(filepath.Join(cwd, ".openzerocode", "cos.json"), `{"project":"legacy-must-not-win"}`)
 	t.Setenv("COS_PROJECT_URL", "https://env")
 	p := &COSProvider{HomeDir: home, CWD: cwd}
 	cfg := p.projectConfig()
 	if cfg.Project != "local" || cfg.ProjectURL != "https://env" {
+		t.Fatalf("config = %#v", cfg)
+	}
+}
+
+func TestCOSProjectConfigFallsBackToLegacyRurushugo(t *testing.T) {
+	home := t.TempDir()
+	cwd := t.TempDir()
+	writeJSON := func(path, value string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(value), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeJSON(filepath.Join(home, ".rurushugo", "cos.json"), `{"project":"legacy-global","projectUrl":"https://legacy-global"}`)
+	writeJSON(filepath.Join(cwd, ".rurushugo", "cos.json"), `{"project":"legacy-local"}`)
+	p := &COSProvider{HomeDir: home, CWD: cwd}
+	cfg := p.projectConfig()
+	if cfg.Project != "legacy-local" || cfg.ProjectURL != "https://legacy-global" {
 		t.Fatalf("config = %#v", cfg)
 	}
 }

@@ -13,7 +13,7 @@ func TestInitCreatesCOSConfigWithoutOverwriting(t *testing.T) {
 	if err := run([]string{"--init", "--cwd", root}); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(root, ".rurushugo", "cos.json")
+	path := filepath.Join(root, ".rurushu", "cos.json")
 	data, err := os.ReadFile(path)
 	if err != nil || !strings.Contains(string(data), `"projectUrl"`) {
 		t.Fatalf("created config: %q %v", data, err)

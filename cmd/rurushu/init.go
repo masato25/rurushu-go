@@ -19,7 +19,7 @@ func runInit(args []string) error {
 	if err != nil {
 		return err
 	}
-	dir := fs.String("cwd", cwd, "project directory where .rurushugo/cos.json will be created")
+	dir := fs.String("cwd", cwd, "project directory where .rurushu/cos.json will be created")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -40,7 +40,7 @@ func runInit(args []string) error {
 	if !info.IsDir() {
 		return fmt.Errorf("not a directory: %s", root)
 	}
-	configDir := filepath.Join(root, ".rurushugo")
+	configDir := filepath.Join(root, ".rurushu")
 	if err := os.MkdirAll(configDir, 0o700); err != nil {
 		return fmt.Errorf("create config directory: %w", err)
 	}
