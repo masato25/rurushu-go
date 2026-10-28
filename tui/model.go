@@ -79,6 +79,7 @@ type Model struct {
 	sessionID           string
 	sessionSaveError    string
 	setup               *SetupModel
+	review              *reviewModel
 }
 
 type streamStartedMsg struct {
@@ -209,6 +210,42 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
+	case tea.MouseWheelMsg:
+		if m.review != nil {
+			return m, m.review.wheel(msg.Button)
+		}
+		if m.setup != nil {
+			_, cmd := m.setup.Update(msg)
+			return m, cmd
+		}
+	case reviewFilesMsg:
+		if m.review == nil || msg.generation != m.review.generation {
+			return m, nil
+		}
+		m.review.loading = false
+		if msg.err != nil {
+			m.review.err = msg.err.Error()
+			return m, nil
+		}
+		m.review.files = msg.files
+		m.review.commits = msg.commits
+		m.review.commitError = msg.commitError
+		m.review.selected = min(m.review.selected, max(0, len(msg.files)-1))
+		return m, m.review.loadDiff()
+	case reviewDiffMsg:
+		if m.review == nil || msg.generation != m.review.generation {
+			return m, nil
+		}
+		m.review.loading = false
+		if msg.err != nil {
+			m.review.err = msg.err.Error()
+			return m, nil
+		}
+		m.review.diff = nil
+		if msg.diff != "" {
+			m.review.diff = strings.Split(strings.TrimSuffix(msg.diff, "\n"), "\n")
+		}
+		return m, nil
 	case progressTickMsg:
 		if m.streaming {
 			m.progressFrame = (m.progressFrame + 1) % len(progressFrames)
@@ -284,6 +321,20 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, waitForStreamEvent(msg.id, msg.stream)
 
 	case tea.KeyPressMsg:
+		if m.review != nil {
+			switch msg.String() {
+			case "f3", "esc":
+				m.review = nil
+				return m, nil
+			case "ctrl+c":
+				return m, tea.Quit
+			}
+			return m, m.review.key(msg.String())
+		}
+		if msg.String() == "f3" && m.pendingPermission == nil && m.setup == nil {
+			m.review = newReviewModel()
+			return m, m.review.refresh()
+		}
 		if m.setup != nil {
 			switch msg.String() {
 			case "esc", "f2":
@@ -461,6 +512,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) View() tea.View {
+	if m.review != nil {
+		return m.review.view(m.width, m.height)
+	}
 	if m.setup != nil {
 		return m.setup.View()
 	}

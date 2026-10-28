@@ -2,11 +2,28 @@ package tui
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
 	rurushuconfig "github.com/masato25/rurushu-go/config"
 )
+
+func TestSetupScreenClipsToTerminalAndEnablesMouse(t *testing.T) {
+	m := NewSetupModel(rurushuconfig.Defaults())
+	m.Update(tea.WindowSizeMsg{Width: 72, Height: 9})
+	v := m.View()
+	if v.MouseMode == tea.MouseModeNone {
+		t.Fatal("setup must capture wheel events")
+	}
+	if lines := strings.Count(v.Content, "\n") + 1; lines > 9 {
+		t.Fatalf("setup overflows terminal: %d lines", lines)
+	}
+	m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelDown})
+	if m.scroll == 0 {
+		t.Fatal("mouse wheel did not scroll setup")
+	}
+}
 
 func TestSetupSave(t *testing.T) {
 	root := t.TempDir()

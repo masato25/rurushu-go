@@ -22,6 +22,7 @@ type SetupModel struct {
 	path     string
 	err      error
 	embedded bool
+	scroll   int
 }
 
 const (
@@ -69,6 +70,14 @@ func (m *SetupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		width := min(72, max(20, msg.Width-8))
 		for i := range m.inputs {
 			m.inputs[i].SetWidth(width)
+		}
+		return m, nil
+	case tea.MouseWheelMsg:
+		if msg.Button == tea.MouseWheelDown {
+			m.scroll += 3
+		}
+		if msg.Button == tea.MouseWheelUp {
+			m.scroll = max(0, m.scroll-3)
 		}
 		return m, nil
 	case tea.KeyPressMsg:
@@ -194,8 +203,14 @@ func (m *SetupModel) View() tea.View {
 	if m.width > 0 {
 		content = lipgloss.NewStyle().Width(max(1, min(m.width, 88))).Render(content)
 	}
+	if m.height > 0 {
+		lines := strings.Split(content, "\n")
+		m.scroll = min(m.scroll, max(0, len(lines)-m.height))
+		content = strings.Join(lines[m.scroll:min(len(lines), m.scroll+m.height)], "\n")
+	}
 	view := tea.NewView(content)
 	view.AltScreen = true
+	view.MouseMode = tea.MouseModeCellMotion
 	view.WindowTitle = "Rurushu Setup"
 	if cursor := m.inputs[m.focus].Cursor(); cursor != nil {
 		view.Cursor = cursor
