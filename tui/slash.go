@@ -55,6 +55,24 @@ func (m *Model) RegisterSlashCommand(command SlashCommand) error {
 
 func (m *Model) registerDefaultSlashCommands() {
 	m.registerAttachmentSlashCommands()
+	for _, shortcut := range []struct {
+		name, description string
+	}{
+		{"f2", "open setup (same as F2)"},
+		{"f3", "open review (same as F3)"},
+		{"f4", "open terminal (same as F4)"},
+		{"f5", "open project browser (same as F5)"},
+	} {
+		name := shortcut.name
+		_ = m.RegisterSlashCommand(SlashCommand{
+			Name:        name,
+			Usage:       "/" + name,
+			Description: shortcut.description,
+			Run: func(string) (SlashCommandResult, error) {
+				return SlashCommandResult{}, nil
+			},
+		})
+	}
 	_ = m.RegisterSlashCommand(SlashCommand{
 		Name:        "help",
 		Usage:       "/help",
@@ -85,6 +103,25 @@ func (m *Model) registerDefaultSlashCommands() {
 			return SlashCommandResult{Quit: true}, nil
 		},
 	})
+}
+
+func slashFunctionKey(input string) (tea.KeyPressMsg, bool) {
+	name, args, ok := parseSlashCommand(input)
+	if !ok || strings.TrimSpace(args) != "" {
+		return tea.KeyPressMsg{}, false
+	}
+	switch name {
+	case "f2":
+		return tea.KeyPressMsg(tea.Key{Code: tea.KeyF2}), true
+	case "f3":
+		return tea.KeyPressMsg(tea.Key{Code: tea.KeyF3}), true
+	case "f4":
+		return tea.KeyPressMsg(tea.Key{Code: tea.KeyF4}), true
+	case "f5":
+		return tea.KeyPressMsg(tea.Key{Code: tea.KeyF5}), true
+	default:
+		return tea.KeyPressMsg{}, false
+	}
 }
 
 func (m *Model) registerJobSlashCommands() {

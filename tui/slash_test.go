@@ -291,6 +291,36 @@ func TestDoubleSlashDoesNotAutocomplete(t *testing.T) {
 	}
 }
 
+func TestFunctionKeySlashCommandsAreRegistered(t *testing.T) {
+	m := New("test-model", "test-provider")
+	for _, name := range []string{"f2", "f3", "f4", "f5"} {
+		if _, ok := m.slashCommands[name]; !ok {
+			t.Fatalf("/%s was not registered", name)
+		}
+	}
+}
+
+func TestSlashFunctionKeyParsing(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"/f2", "f2"},
+		{"/F3", "f3"},
+		{" /f4 ", "f4"},
+		{"/f5", "f5"},
+	}
+	for _, tt := range tests {
+		msg, ok := slashFunctionKey(tt.input)
+		if !ok || msg.String() != tt.want {
+			t.Fatalf("slashFunctionKey(%q)=(%q,%v), want (%q,true)", tt.input, msg.String(), ok, tt.want)
+		}
+	}
+	if _, ok := slashFunctionKey("/f2 extra"); ok {
+		t.Fatal("function-key slash command should reject arguments")
+	}
+}
+
 func TestJobSlashCommandsUseProjectManager(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, ".rurushu")

@@ -342,20 +342,21 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, waitForStreamEvent(msg.id, msg.stream)
 
 	case tea.KeyPressMsg:
+		key := msg.String()
 		if m.browser != nil {
-			if msg.String() == "f5" || (msg.String() == "esc" && m.browser.focusFiles) {
+			if key == "f5" || (key == "esc" && m.browser.focusFiles) {
 				m.browser = nil
 				return m, nil
 			}
-			m.browser.key(msg.String())
+			m.browser.key(key)
 			return m, nil
 		}
-		if msg.String() == "f5" && m.pendingPermission == nil && m.review == nil && m.setup == nil && !m.terminalVisible {
+		if key == "f5" && m.pendingPermission == nil && m.review == nil && m.setup == nil && !m.terminalVisible {
 			m.browser = newFileBrowser(m.terminalCWD())
 			return m, nil
 		}
 		if m.terminalVisible && m.terminal != nil {
-			if msg.String() == "f4" || (!m.terminal.focused && msg.String() == "esc") {
+			if key == "f4" || (!m.terminal.focused && key == "esc") {
 				m.terminal.terminal.Blur()
 				m.terminal.focused = false
 				m.terminalVisible = false
@@ -363,7 +364,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, m.terminal.update(msg)
 		}
-		if msg.String() == "f4" && m.setup == nil && m.review == nil && m.pendingPermission == nil {
+		if key == "f4" && m.setup == nil && m.review == nil && m.pendingPermission == nil {
 			if m.terminalService == nil {
 				m.terminalService = NewTerminalService(m.terminalCWD())
 			}
@@ -378,21 +379,21 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(cmd, resizeCmd)
 		}
 		if m.review != nil {
-			switch msg.String() {
+			switch key {
 			case "f3", "esc":
 				m.review = nil
 				return m, nil
 			case "ctrl+c":
 				return m, tea.Quit
 			}
-			return m, m.review.key(msg.String())
+			return m, m.review.key(key)
 		}
-		if msg.String() == "f3" && m.pendingPermission == nil && m.setup == nil {
+		if key == "f3" && m.pendingPermission == nil && m.setup == nil {
 			m.review = newReviewModel()
 			return m, m.review.refresh()
 		}
 		if m.setup != nil {
-			switch msg.String() {
+			switch key {
 			case "esc", "f2":
 				m.setup = nil
 				return m, nil
@@ -400,7 +401,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 			}
 			if m.setup.saved {
-				if msg.String() == "enter" {
+				if key == "enter" {
 					m.setup = nil
 				}
 				return m, nil
@@ -408,7 +409,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			_, cmd := m.setup.Update(msg)
 			return m, cmd
 		}
-		if msg.String() == "f2" && m.pendingPermission == nil {
+		if key == "f2" && m.pendingPermission == nil {
 			cfg, err := rurushuconfig.Load()
 			if err != nil {
 				m.sessionSaveError = err.Error()
@@ -498,6 +499,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.composer.Reset()
 			m.updateSlashAutocomplete()
 			if value != "" {
+				if shortcut, ok := slashFunctionKey(value); ok {
+					return m.Update(shortcut)
+				}
 				if handled, command := m.runSlashCommand(value); handled {
 					m.refreshConversation()
 					m.layout()

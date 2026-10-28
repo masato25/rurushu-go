@@ -31,6 +31,69 @@ func TestDuelTUISendsOwnerInstruction(t *testing.T) {
 	}
 }
 
+func TestDuelTUIQueuesMultipleInstructionsWhileRunning(t *testing.T) {
+	notes := make(chan string, 4)
+	ui := newDuelUI(notes, make(chan duelUpdate, 4), func() {}, func() {})
+
+	for _, note := range []string{"first steering note", "second steering note"} {
+		ui.input.SetValue(note)
+		ui.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	}
+
+	if ui.stopped {
+		t.Fatal("running duel should remain active while owner instructions are queued")
+	}
+	if got := len(notes); got != 2 {
+		t.Fatalf("queued instructions=%d want=2", got)
+	}
+	if view := ui.View().Content; !strings.Contains(view, "待送 2 則") {
+		t.Fatalf("queue depth not visible in TUI: %q", view)
+	}
+	if got := <-notes; got != "first steering note" {
+		t.Fatalf("first queued instruction=%q", got)
+	}
+	if got := <-notes; got != "second steering note" {
+		t.Fatalf("second queued instruction=%q", got)
+	}
+}
+
+func TestDuelTUIDoubleEscapeClearsCurrentInput(t *testing.T) {
+	ui := newDuelUI(make(chan string, 4), make(chan duelUpdate, 4), func() {}, func() {})
+	ui.input.SetValue("尚未送出的主人指令")
+
+	ui.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if got := ui.input.Value(); got != "尚未送出的主人指令" {
+		t.Fatalf("first escape cleared input: %q", got)
+	}
+	if !ui.escPending {
+		t.Fatal("first escape should arm input clear")
+	}
+
+	ui.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if got := ui.input.Value(); got != "" {
+		t.Fatalf("second escape did not clear input: %q", got)
+	}
+	if ui.escPending {
+		t.Fatal("escape clear should disarm after clearing")
+	}
+}
+
+func TestDuelTUIDoubleEscapeMustBeConsecutive(t *testing.T) {
+	ui := newDuelUI(make(chan string, 4), make(chan duelUpdate, 4), func() {}, func() {})
+	ui.input.SetValue("draft")
+
+	ui.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	ui.Update(tea.KeyPressMsg{Code: 'x', Text: "x"})
+	ui.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+
+	if got := ui.input.Value(); got == "" {
+		t.Fatal("non-consecutive escape presses should not clear input")
+	}
+	if !ui.escPending {
+		t.Fatal("escape after another key should arm a new clear sequence")
+	}
+}
+
 func TestDuelTUIRendersBothSides(t *testing.T) {
 	ui := newDuelUI(make(chan string, 4), make(chan duelUpdate, 4), func() {}, func() {}, "ses-left", "ses-right")
 	ui.Update(tea.WindowSizeMsg{Width: 100, Height: 30})

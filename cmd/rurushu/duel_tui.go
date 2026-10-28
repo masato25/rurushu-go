@@ -37,6 +37,7 @@ type duelUI struct {
 	status                string
 	leftID, rightID       string
 	modal                 string
+	escPending            bool
 }
 
 type duelModalLayout struct {
@@ -54,7 +55,7 @@ func newDuelUI(instructions chan string, updates chan duelUpdate, run func(), ca
 	l.MouseWheelEnabled = true
 	r.MouseWheelEnabled = true
 	t := textarea.New()
-	t.Placeholder = "主人輸入指令，Enter 送出；Ctrl+C 離開"
+	t.Placeholder = "主人輸入指令；思考中也可 Enter 預排，完成後自動接續"
 	t.ShowLineNumbers = false
 	t.SetHeight(2)
 	t.SetWidth(76)
@@ -148,6 +149,7 @@ func (m *duelUI) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if m.modal != "" {
 			return m, nil
 		}
+		m.escPending = false
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(v)
 		return m, cmd
@@ -163,16 +165,33 @@ func (m *duelUI) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		if v.String() != "esc" {
+			m.escPending = false
+		}
 		switch v.String() {
 		case "ctrl+c":
 			m.cancel()
 			return m, tea.Quit
+		case "esc":
+			if m.input.Value() == "" {
+				m.escPending = false
+				return m, nil
+			}
+			if m.escPending {
+				m.input.Reset()
+				m.escPending = false
+				m.status = "已清空目前輸入內容"
+				return m, m.input.Focus()
+			}
+			m.escPending = true
+			m.status = "再按一次 Esc 清空目前輸入"
+			return m, nil
 		case "enter":
 			note := strings.TrimSpace(m.input.Value())
 			if note != "" {
 				select {
 				case m.instructions <- note:
-					m.status = "主人指令已排入下一個決策節點"
+					m.status = fmt.Sprintf("主人指令已預排 · 待送 %d 則", len(m.instructions))
 				default:
 					m.status = "指令佇列已滿，請稍後再試"
 				}
@@ -275,7 +294,11 @@ func (m *duelUI) View() tea.View {
 	left := headline.Render(leftTitle) + "\n" + m.left.View()
 	right := headline.Render(rightTitle) + "\n" + m.right.View()
 	view := lipgloss.JoinHorizontal(lipgloss.Top, lipgloss.NewStyle().Width(w).Render(left), " │ ", lipgloss.NewStyle().Width(w).Render(right))
-	footer := "\n" + m.status + "\n" + m.input.View() + "\nCtrl+C 離開 · Ctrl+R 重試 · Shift+Enter 換行"
+	status := m.status
+	if pending := len(m.instructions); pending > 0 && !strings.Contains(status, "待送") {
+		status += fmt.Sprintf(" · 待送指令 %d 則", pending)
+	}
+	footer := "\n" + status + "\n" + m.input.View() + "\nEnter 送出/預排 · Esc×2 清空輸入 · Ctrl+C 離開 · Ctrl+R 重試 · Shift+Enter 換行"
 	result := tea.NewView(view + footer)
 	result.AltScreen = true
 	result.MouseMode = tea.MouseModeCellMotion
