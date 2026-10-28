@@ -410,6 +410,35 @@ func TestCOSStreamReceivesFinalSnapshotAfterTurnEnd(t *testing.T) {
 	}
 }
 
+func TestCOSStreamRejectsInterruptedTurnEnd(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"nextFrom": 5, "events": []map[string]any{
+			{"seq": 1, "kind": "user_message", "inputId": "opening"},
+			{"seq": 2, "kind": "turn_start", "turnId": "turn-1"},
+			{"seq": 3, "kind": "assistant_message", "turnId": "turn-1", "messageId": "first", "message": map[string]any{"text": "incomplete"}},
+			{"seq": 4, "kind": "turn_end", "turnId": "turn-1", "outcome": "interrupted"},
+		}})
+	}))
+	defer server.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	p := &COSProvider{HTTPClient: server.Client()}
+	out := make(chan StreamEvent)
+	go p.runStream(ctx, out, server.URL, "token", "session-1", "prompt", true)
+	var gotError bool
+	for ev := range out {
+		if ev.Type == EventDone {
+			t.Fatal("interrupted generation was marked successful")
+		}
+		if ev.Type == EventError && ev.Error != nil && strings.Contains(ev.Error.Error(), "interrupted") {
+			gotError = true
+		}
+	}
+	if !gotError {
+		t.Fatal("expected interrupted turn error")
+	}
+}
+
 func TestRandomIDIsUUID(t *testing.T) {
 	id := randomID()
 	if !regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`).MatchString(id) {

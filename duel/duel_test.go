@@ -629,6 +629,16 @@ func TestCallRecoversFromContentReferenceOnly(t *testing.T) {
 	if turn.Action != "plan" || len(s.calls) != 2 {
 		t.Fatalf("failed to recover: %+v calls=%d", turn, len(s.calls))
 	}
+	if len(s.requests) != 2 {
+		t.Fatalf("requests=%d", len(s.requests))
+	}
+	retryPrompt := s.requests[1].Messages[0].Content
+	if strings.Contains(retryPrompt, "review the goal") {
+		t.Fatalf("retry replayed the original task: %q", retryPrompt)
+	}
+	if !strings.Contains(retryPrompt, "Do not repeat or redo the task") {
+		t.Fatalf("retry missing no-replay guard: %q", retryPrompt)
+	}
 }
 
 func TestCallDoesNotRetryForeverOnContentReferences(t *testing.T) {

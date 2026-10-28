@@ -59,7 +59,6 @@ type RecurringOptions struct {
 
 func call(ctx context.Context, s Streamer, id, prompt string) (Turn, error) {
 	var lastErr error
-	originalPrompt := prompt
 	for attempt := 0; attempt < 3; attempt++ {
 		turn, err := callOnce(ctx, s, id, prompt)
 		if err == nil {
@@ -73,7 +72,7 @@ func call(ctx context.Context, s Streamer, id, prompt string) (Turn, error) {
 		if !errors.As(err, &malformed) {
 			return Turn{}, err
 		}
-		prompt = originalPrompt + "\n\nYour previous reply was not a machine-readable decision (it may have been only a content-reference marker). Reply with ONE complete JSON object containing action, summary, next, evidence. No tools, markdown, citations or explanation outside JSON."
+		prompt = "Your previous reply was not a machine-readable decision (it may have been only a content-reference marker). Do not repeat or redo the task. Reply only with the final decision for the work you already completed, as ONE complete JSON object containing action, summary, next, evidence. No tools, markdown, citations or explanation outside JSON."
 	}
 	return Turn{}, lastErr
 }

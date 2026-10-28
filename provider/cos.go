@@ -106,6 +106,7 @@ type cosEvent struct {
 	InputID   string `json:"inputId"`
 	Final     bool   `json:"final"`
 	State     string `json:"state"`
+	Outcome   string `json:"outcome"`
 	Message   *struct {
 		Text string `json:"text"`
 	} `json:"message"`
@@ -186,6 +187,7 @@ func (p *COSProvider) runStream(ctx context.Context, out chan<- StreamEvent, bas
 	var correlation []cosEvent
 	remoteTurnID := ""
 	turnEnded := false
+	turnOutcome := ""
 	quietAfterEnd := 0
 	lastMatchedSeq := -1
 	lastActivity := time.Now()
@@ -236,6 +238,7 @@ func (p *COSProvider) runStream(ctx context.Context, out chan<- StreamEvent, bas
 			switch event.Kind {
 			case "turn_end":
 				turnEnded = true
+				turnOutcome = event.Outcome
 				matchingUpdate = matchingUpdate || fresh
 			case "tool_call":
 				if event.Tool != nil && !seenTools[event.Tool.CallID] {
@@ -277,6 +280,10 @@ func (p *COSProvider) runStream(ctx context.Context, out chan<- StreamEvent, bas
 				quietAfterEnd++
 			}
 			if quietAfterEnd >= 2 {
+				if turnOutcome != "" && turnOutcome != "completed" {
+					p.emitError(out, fmt.Errorf("Chat On Steroids turn ended with outcome %q (turn=%q); refusing automatic replay", turnOutcome, remoteTurnID))
+					return
+				}
 				out <- StreamEvent{Type: EventDone}
 				return
 			}
