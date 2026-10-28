@@ -71,6 +71,16 @@ go run ./cmd/rurushu --model <model-name> "summarize what I should work on"
 
 ### Chat On Steroids
 
+Initialize a per-project COS configuration template in the current directory (existing files are never overwritten):
+
+```bash
+./bin/rurushu --init
+# Or create the config in another workspace:
+./bin/rurushu --init --cwd /path/to/project
+```
+
+Edit `.rurushugo/cos.json` and fill in `project` and `projectUrl` before starting the COS provider.
+
 Rurushu can connect directly to the local Chat On Steroids Control API (no OpenAI API key required). Enable `controlApi` in Chat On Steroids, start the app, and configure the ChatGPT Project URL:
 
 ```json

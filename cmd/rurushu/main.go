@@ -43,6 +43,9 @@ func main() {
 }
 
 func run(args []string) error {
+	if len(args) > 0 && args[0] == "--init" {
+		return runInit(args[1:])
+	}
 	if len(args) > 0 && args[0] == "handoff" {
 		return runHandoff(args[1:])
 	}
