@@ -343,7 +343,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyPressMsg:
 		if m.browser != nil {
-			if msg.String() == "f5" || msg.String() == "esc" {
+			if msg.String() == "f5" || (msg.String() == "esc" && m.browser.focusFiles) {
 				m.browser = nil
 				return m, nil
 			}

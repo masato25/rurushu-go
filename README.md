@@ -79,6 +79,8 @@ Press **F5** in the regular chat TUI to open a read-only project file browser. T
 
 The preview includes line numbers. For text and source code these correspond to file lines; for rendered Markdown they number the displayed rows rather than the original Markdown source lines.
 
+To select and copy in F5, press **Enter** on a file to focus the preview. Move with **h/j/k/l** or arrow keys, press **v** for Vim-style character selection or **Ctrl+V** for rectangular block selection, then **y** to copy to the system clipboard. **Esc** cancels selection and **Tab** returns to the file list. Markdown selections copy the *rendered text*, not the source Markdown. F5 is read-only.
+
 
 From the regular chat TUI press **F4** to open an embedded PTY shell on the left with a session panel on the right. Press **Enter** to focus the shell, **Ctrl+]** to release keyboard focus, and **F4** or **Esc** while unfocused to return to chat. **Ctrl+C** while focused goes to the subprocess, not to Rurushu. Terminal output and scrolling remain in the TUI alternate screen.
 

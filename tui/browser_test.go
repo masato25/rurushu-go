@@ -116,3 +116,59 @@ func TestF5PreviewLineNumbersAfterPaging(t *testing.T) {
 		t.Fatalf("page should start at line 17: %q", next)
 	}
 }
+
+func TestF5VimCharacterAndBlockSelection(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "sample.txt"), []byte("abcdef\n123456\nABCDEF\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	b := newFileBrowser(root)
+	b.view(100, 20)
+	b.key("enter")
+	if b.focusFiles {
+		t.Fatal("Enter must focus selected file")
+	}
+	b.key("l")
+	b.key("v")
+	b.key("l")
+	b.key("l")
+	if got := b.selectedText(); got != "bcd" {
+		t.Fatalf("character selection = %q", got)
+	}
+	b.key("esc")
+	b.key("ctrl+v")
+	b.key("down")
+	b.key("l")
+	if got := b.selectedText(); got != "de\n45" {
+		t.Fatalf("block selection = %q", got)
+	}
+	b.key("tab")
+	if b.selectMode != "" || !b.focusFiles {
+		t.Fatal("Tab must leave selection and focus files")
+	}
+}
+
+func TestF5MarkdownFocusedPreviewDoesNotExposeANSISequences(t *testing.T) {
+	root := t.TempDir()
+	content := "# Title\n\nSome **strong** text\n\n```go\nfmt.Println(1)\n```\n"
+	if err := os.WriteFile(filepath.Join(root, "readme.md"), []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	b := newFileBrowser(root)
+	b.view(100, 25)
+	b.key("enter")
+	if b.focusFiles {
+		t.Fatal("Enter did not focus markdown")
+	}
+	for _, line := range b.lines(52) {
+		if strings.Contains(line, "\x1b") || strings.Contains(line, "[38;2;") || strings.Contains(line, "[0m") {
+			t.Fatalf("rendered markdown contains raw ANSI: %q", line)
+		}
+	}
+	b.view(100, 25)
+	b.key("ctrl+v")
+	b.key("down")
+	if strings.Contains(b.selectedText(), "\x1b") {
+		t.Fatal("selected markdown copied escape bytes")
+	}
+}
