@@ -71,6 +71,15 @@ go run ./cmd/rurushu --model <model-name> "summarize what I should work on"
 
 ### Chat On Steroids
 
+### Interactive terminal workspace (F4)
+
+From the regular chat TUI press **F4** to open an embedded PTY shell on the left with a session panel on the right. Press **Enter** to focus the shell, **Ctrl+]** to release keyboard focus, and **F4** or **Esc** while unfocused to return to chat. **Ctrl+C** while focused goes to the subprocess, not to Rurushu. Terminal output and scrolling remain in the TUI alternate screen.
+
+There is **one shared interactive shell** for this Rurushu process. F4 hides or reopens the same PTY without stopping running programs. The PTY closes when Rurushu itself exits; it is not a persistent daemon. Existing managed background jobs continue to use the separate job manager.
+
+The agent may call the permission-gated `terminal_send` tool to submit one command to this shell even while F4 is hidden. Opening F4 shows the shell's output. Submission does **not** establish completion, exit status, or that an already-busy interactive program accepted the command. Commands with embedded newlines or control characters are rejected. For completion-aware foreground execution, use the existing `bash` tool instead.
+
+
 Initialize a per-project COS configuration template in the current directory (existing files are never overwritten):
 
 ```bash

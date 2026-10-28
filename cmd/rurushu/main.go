@@ -187,6 +187,9 @@ func run(args []string) error {
 	registry := tool.NewRegistry()
 	builtin.RegisterReadOnly(registry)
 	builtin.RegisterExecution(registry, jobManager)
+	terminalService := tui.NewTerminalService(absCWD)
+	defer terminalService.Close()
+	registry.Register(&terminalSendTool{service: terminalService})
 	client, err := harness.New(prov, harness.Config{
 		CWD:                absCWD,
 		SystemPrompt:       *systemPrompt,
@@ -205,6 +208,7 @@ func run(args []string) error {
 	uiModel.SetActivityMode(activityMode)
 	uiModel.SetPermissionRequests(permissionRequests)
 	uiModel.SetJobManager(jobManager)
+	uiModel.SetTerminalService(terminalService)
 	uiModel.SetProjectSession(projectStore, session)
 	if len(fs.Args()) > 0 {
 		uiModel.SetInitialInput(strings.Join(fs.Args(), " "))

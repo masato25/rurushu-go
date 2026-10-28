@@ -14,6 +14,8 @@ import (
 	"charm.land/glamour/v2"
 	"charm.land/lipgloss/v2"
 	rurushuconfig "github.com/masato25/rurushu-go/config"
+	"github.com/trentkm/spanreed"
+
 	"github.com/masato25/rurushu-go/jobs"
 	"github.com/masato25/rurushu-go/permission"
 	"github.com/masato25/rurushu-go/projectstate"
@@ -80,6 +82,9 @@ type Model struct {
 	sessionSaveError    string
 	setup               *SetupModel
 	review              *reviewModel
+	terminal            *terminalWorkspace
+	terminalService     *TerminalService
+	terminalVisible     bool
 }
 
 type streamStartedMsg struct {
@@ -210,7 +215,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
+	case spanreed.FrameMsg:
+		if m.terminal != nil {
+			return m, m.terminal.update(msg)
+		}
+		return m, nil
 	case tea.MouseWheelMsg:
+		if m.terminalVisible && m.terminal != nil {
+			return m, m.terminal.update(msg)
+		}
 		if m.review != nil {
 			return m, m.review.wheel(msg.Button)
 		}
@@ -256,6 +269,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.layout()
+		if m.terminalVisible && m.terminal != nil {
+			return m, m.terminal.resize(m.width, m.height)
+		}
 		if m.setup != nil {
 			m.setup.Update(msg)
 		}
@@ -321,6 +337,29 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, waitForStreamEvent(msg.id, msg.stream)
 
 	case tea.KeyPressMsg:
+		if m.terminalVisible && m.terminal != nil {
+			if msg.String() == "f4" || (!m.terminal.focused && msg.String() == "esc") {
+				m.terminal.terminal.Blur()
+				m.terminal.focused = false
+				m.terminalVisible = false
+				return m, nil
+			}
+			return m, m.terminal.update(msg)
+		}
+		if msg.String() == "f4" && m.setup == nil && m.review == nil && m.pendingPermission == nil {
+			if m.terminalService == nil {
+				m.terminalService = NewTerminalService(m.terminalCWD())
+			}
+			terminal, cmd, err := m.terminalService.attach(m.width, m.height)
+			if err != nil {
+				m.sessionSaveError = err.Error()
+				return m, nil
+			}
+			m.terminal = terminal
+			m.terminalVisible = true
+			resizeCmd := m.terminal.resize(m.width, m.height)
+			return m, tea.Batch(cmd, resizeCmd)
+		}
 		if m.review != nil {
 			switch msg.String() {
 			case "f3", "esc":
@@ -512,6 +551,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) View() tea.View {
+	if m.terminalVisible && m.terminal != nil {
+		return m.terminal.view(m.width, m.height)
+	}
 	if m.review != nil {
 		return m.review.view(m.width, m.height)
 	}
