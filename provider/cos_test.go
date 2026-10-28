@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -367,6 +368,45 @@ func TestCOSStreamHandlesRevisedMessageSnapshots(t *testing.T) {
 	}
 	if last != "func main() { complete }" {
 		t.Fatalf("snapshot was not replaced: %q", last)
+	}
+}
+
+func TestCOSStreamReceivesFinalSnapshotAfterTurnEnd(t *testing.T) {
+	var polls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		poll := polls.Add(1)
+		events := []map[string]any{
+			{"seq": 1, "kind": "user_message", "inputId": "opening"},
+			{"seq": 2, "kind": "turn_start", "turnId": "turn-1"},
+			{"seq": 3, "kind": "assistant_message", "turnId": "turn-1", "messageId": "msg-1", "message": map[string]any{"text": "partial"}},
+			{"seq": 4, "kind": "turn_end", "turnId": "turn-1"},
+		}
+		if poll >= 2 {
+			events = append(events, map[string]any{"seq": 5, "kind": "assistant_message", "turnId": "turn-1", "messageId": "msg-1", "message": map[string]any{"text": "complete response after turn end"}})
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"nextFrom": 6, "events": events})
+	}))
+	defer server.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	p := &COSProvider{HTTPClient: server.Client()}
+	out := make(chan StreamEvent)
+	go p.runStream(ctx, out, server.URL, "token", "session-1", "prompt", true)
+	var last string
+	done := false
+	for ev := range out {
+		if ev.Type == EventReplace {
+			last = ev.Text
+		}
+		if ev.Type == EventDone {
+			done = true
+		}
+		if ev.Type == EventError {
+			t.Fatal(ev.Error)
+		}
+	}
+	if !done || last != "complete response after turn end" {
+		t.Fatalf("truncated COS reply, done=%t response=%q", done, last)
 	}
 }
 

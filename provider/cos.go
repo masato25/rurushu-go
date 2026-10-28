@@ -185,6 +185,9 @@ func (p *COSProvider) runStream(ctx context.Context, out chan<- StreamEvent, bas
 	seenTools := map[string]bool{}
 	var correlation []cosEvent
 	remoteTurnID := ""
+	turnEnded := false
+	quietAfterEnd := 0
+	lastMatchedSeq := -1
 	lastActivity := time.Now()
 	startedWaiting := lastActivity
 	for {
@@ -211,6 +214,10 @@ func (p *COSProvider) runStream(ctx context.Context, out chan<- StreamEvent, bas
 		if payload.NextFrom > 0 {
 			nextFrom = payload.NextFrom
 		}
+		// A terminal turn_end may be journaled before a final assistant
+		// snapshot becomes visible. Do not close the stream until the journal
+		// has been polled again without matching updates.
+		matchingUpdate := false
 		for _, event := range payload.Events {
 			if event.Kind == "user_message" || event.Kind == "turn_start" || event.Kind == "turn_end" {
 				correlation = append(correlation, event)
@@ -221,11 +228,15 @@ func (p *COSProvider) runStream(ctx context.Context, out chan<- StreamEvent, bas
 			if remoteTurnID == "" || event.TurnID != remoteTurnID {
 				continue
 			}
+			fresh := event.Seq > lastMatchedSeq
+			if fresh {
+				lastMatchedSeq = event.Seq
+			}
 			lastActivity = time.Now()
 			switch event.Kind {
 			case "turn_end":
-				out <- StreamEvent{Type: EventDone}
-				return
+				turnEnded = true
+				matchingUpdate = matchingUpdate || fresh
 			case "tool_call":
 				if event.Tool != nil && !seenTools[event.Tool.CallID] {
 					seenTools[event.Tool.CallID] = true
@@ -237,6 +248,7 @@ func (p *COSProvider) runStream(ctx context.Context, out chan<- StreamEvent, bas
 					emitSnapshot()
 				}
 			case "assistant_message":
+				matchingUpdate = matchingUpdate || fresh
 				if event.Message == nil {
 					continue
 				}
@@ -256,6 +268,17 @@ func (p *COSProvider) runStream(ctx context.Context, out chan<- StreamEvent, bas
 				}
 				// A final assistant message closes only that message, not the
 				// entire round. More assistant messages can follow tool calls.
+			}
+		}
+		if turnEnded {
+			if matchingUpdate {
+				quietAfterEnd = 0
+			} else {
+				quietAfterEnd++
+			}
+			if quietAfterEnd >= 2 {
+				out <- StreamEvent{Type: EventDone}
+				return
 			}
 		}
 		if time.Since(lastActivity) > cosIdleTimeout {
