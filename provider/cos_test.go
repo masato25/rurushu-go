@@ -75,6 +75,32 @@ func TestCOSWaitForHandoffRespectsCancellation(t *testing.T) {
 	}
 }
 
+func TestCOSTurnStillActiveRequiresMatchingLiveTurn(t *testing.T) {
+	active := "turn-left"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/sessions/cos-left" || r.URL.Query().Get("live") != "1" {
+			t.Errorf("unexpected live request %s", r.URL)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"live": map[string]any{"activeTurnId": active}})
+	}))
+	defer server.Close()
+	p := &COSProvider{HTTPClient: server.Client()}
+	ctx := context.Background()
+	start := time.Now()
+	if !p.cosTurnStillActive(ctx, server.URL, "token", "cos-left", "turn-left", start) {
+		t.Fatal("active correlated turn should be allowed to continue")
+	}
+	if p.cosTurnStillActive(ctx, server.URL, "token", "cos-left", "turn-right", start) {
+		t.Fatal("must not extend timeout for another turn")
+	}
+	if p.cosTurnStillActive(ctx, server.URL, "token", "cos-left", "", start) {
+		t.Fatal("must not extend timeout before correlating a turn")
+	}
+	if p.cosTurnStillActive(ctx, server.URL, "token", "cos-left", "turn-left", start.Add(-21*time.Minute)) {
+		t.Fatal("must not extend an indefinitely stuck turn")
+	}
+}
+
 func TestCOSCompactResumeUsesExistingMapping(t *testing.T) {
 	requested := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

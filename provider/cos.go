@@ -186,6 +186,7 @@ func (p *COSProvider) runStream(ctx context.Context, out chan<- StreamEvent, bas
 	var correlation []cosEvent
 	remoteTurnID := ""
 	lastActivity := time.Now()
+	startedWaiting := lastActivity
 	for {
 		if !sleepContext(ctx, cosPollInterval) {
 			p.cancelInput(baseURL, token, inputID)
@@ -199,8 +200,11 @@ func (p *COSProvider) runStream(ctx context.Context, out chan<- StreamEvent, bas
 		path := fmt.Sprintf("%s/v1/sessions/%s/events?from=%d&limit=50", baseURL, url.PathEscape(sessionID), nextFrom)
 		if err := p.getJSON(ctx, path, token, &payload); err != nil {
 			if time.Since(lastActivity) > cosIdleTimeout {
-				p.emitError(out, fmt.Errorf("timeout waiting for Chat On Steroids response: %w", err))
-				return
+				if !p.cosTurnStillActive(ctx, baseURL, token, sessionID, remoteTurnID, startedWaiting) {
+					p.emitError(out, fmt.Errorf("timeout reading Chat On Steroids events (turn=%q): %w", remoteTurnID, err))
+					return
+				}
+				lastActivity = time.Now()
 			}
 			continue
 		}
@@ -255,10 +259,31 @@ func (p *COSProvider) runStream(ctx context.Context, out chan<- StreamEvent, bas
 			}
 		}
 		if time.Since(lastActivity) > cosIdleTimeout {
-			p.emitError(out, errors.New("timeout waiting for Chat On Steroids generation"))
-			return
+			if !p.cosTurnStillActive(ctx, baseURL, token, sessionID, remoteTurnID, startedWaiting) {
+				p.emitError(out, fmt.Errorf("timeout waiting for Chat On Steroids generation (no matching event for %s, turn=%q)", cosIdleTimeout, remoteTurnID))
+				return
+			}
+			lastActivity = time.Now()
 		}
 	}
+}
+
+// A live native turn may legitimately have no journal events during extended
+// reasoning or tool execution. Keep waiting only if COS confirms the exact
+// correlated turn is active, with an absolute bound against stuck generations.
+func (p *COSProvider) cosTurnStillActive(ctx context.Context, baseURL, token, sessionID, turnID string, started time.Time) bool {
+	if turnID == "" || time.Since(started) >= 20*time.Minute {
+		return false
+	}
+	var detail struct {
+		Live *struct {
+			ActiveTurnID string `json:"activeTurnId"`
+		} `json:"live"`
+	}
+	if err := p.getJSON(ctx, baseURL+"/v1/sessions/"+url.PathEscape(sessionID)+"?live=1", token, &detail); err != nil {
+		return false
+	}
+	return detail.Live != nil && detail.Live.ActiveTurnID == turnID
 }
 
 func (p *COSProvider) waitForHandoff(ctx context.Context, baseURL, token, sessionID string) error {
