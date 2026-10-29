@@ -86,6 +86,7 @@ type Model struct {
 	terminal            *terminalWorkspace
 	terminalService     *TerminalService
 	terminalVisible     bool
+	queuedInputs        []string
 }
 
 type streamStartedMsg struct {
@@ -100,6 +101,8 @@ type streamEventMsg struct {
 	ok     bool
 	stream <-chan provider.StreamEvent
 }
+
+type queuedSubmitMsg struct{}
 
 type permissionPromptMsg struct {
 	prompt *permission.Prompt
@@ -324,7 +327,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if !msg.ok {
 			m.finishStream()
-			return m, nil
+			return m, m.nextQueuedSubmitCmd()
 		}
 		follow := m.followStream
 		offset := m.viewport.YOffset()
@@ -337,9 +340,19 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.viewport.SetYOffset(min(offset, maxOffset))
 		}
 		if done {
-			return m, nil
+			return m, m.nextQueuedSubmitCmd()
 		}
 		return m, waitForStreamEvent(msg.id, msg.stream)
+
+	case queuedSubmitMsg:
+		if m.streaming || len(m.queuedInputs) == 0 {
+			return m, nil
+		}
+		value := m.queuedInputs[0]
+		m.queuedInputs = m.queuedInputs[1:]
+		m.composer.SetValue(value)
+		m.layout()
+		return m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
 
 	case tea.KeyPressMsg:
 		key := msg.String()
@@ -472,6 +485,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+c":
 			return m, tea.Quit
 		case "esc":
+			if m.composer.Value() != "" {
+				m.composer.Reset()
+				m.updateSlashAutocomplete()
+				m.layout()
+				return m, nil
+			}
 			if m.streaming {
 				m.cancelActiveStream()
 				return m, nil
@@ -490,6 +509,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "enter":
 			if m.streaming {
+				value := strings.TrimSpace(m.composer.Value())
+				if value != "" {
+					m.queuedInputs = append(m.queuedInputs, value)
+					m.composer.Reset()
+					m.updateSlashAutocomplete()
+					m.layout()
+				}
 				return m, nil
 			}
 			value := strings.TrimSpace(m.composer.Value())
@@ -1045,6 +1071,13 @@ func (m *Model) finishStream() {
 	m.toolActivity = ""
 	m.composer.Focus()
 	m.refreshConversation()
+}
+
+func (m *Model) nextQueuedSubmitCmd() tea.Cmd {
+	if len(m.queuedInputs) == 0 {
+		return nil
+	}
+	return func() tea.Msg { return queuedSubmitMsg{} }
 }
 
 func (m *Model) finishStreamWithError(err error) {

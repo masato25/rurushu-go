@@ -37,7 +37,6 @@ type duelUI struct {
 	status                string
 	leftID, rightID       string
 	modal                 string
-	escPending            bool
 }
 
 type duelModalLayout struct {
@@ -149,7 +148,6 @@ func (m *duelUI) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if m.modal != "" {
 			return m, nil
 		}
-		m.escPending = false
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(v)
 		return m, cmd
@@ -165,27 +163,17 @@ func (m *duelUI) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		if v.String() != "esc" {
-			m.escPending = false
-		}
 		switch v.String() {
 		case "ctrl+c":
 			m.cancel()
 			return m, tea.Quit
 		case "esc":
 			if m.input.Value() == "" {
-				m.escPending = false
 				return m, nil
 			}
-			if m.escPending {
-				m.input.Reset()
-				m.escPending = false
-				m.status = "已清空目前輸入內容"
-				return m, m.input.Focus()
-			}
-			m.escPending = true
-			m.status = "再按一次 Esc 清空目前輸入"
-			return m, nil
+			m.input.Reset()
+			m.status = "已清空目前輸入內容"
+			return m, m.input.Focus()
 		case "enter":
 			note := strings.TrimSpace(m.input.Value())
 			if note != "" {
@@ -298,7 +286,7 @@ func (m *duelUI) View() tea.View {
 	if pending := len(m.instructions); pending > 0 && !strings.Contains(status, "待送") {
 		status += fmt.Sprintf(" · 待送指令 %d 則", pending)
 	}
-	footer := "\n" + status + "\n" + m.input.View() + "\nEnter 送出/預排 · Esc×2 清空輸入 · Ctrl+C 離開 · Ctrl+R 重試 · Shift+Enter 換行"
+	footer := "\n" + status + "\n" + m.input.View() + "\nEnter 送出/預排 · Esc 清空輸入 · Ctrl+C 離開 · Ctrl+R 重試 · Shift+Enter 換行"
 	result := tea.NewView(view + footer)
 	result.AltScreen = true
 	result.MouseMode = tea.MouseModeCellMotion

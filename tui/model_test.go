@@ -516,7 +516,7 @@ func TestInlinePermissionApproveAndDeny(t *testing.T) {
 	}
 }
 
-func TestStreamingRejectsSecondSubmit(t *testing.T) {
+func TestStreamingQueuesSecondSubmit(t *testing.T) {
 	streamer := newControlledStreamer()
 	m := NewWithStreamer("gpt-test", "openai-compatible", streamer)
 	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -534,10 +534,67 @@ func TestStreamingRejectsSecondSubmit(t *testing.T) {
 	m.composer.SetValue("second")
 	m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
 	if len(m.messages) != 2 {
-		t.Fatalf("second submit changed transcript while streaming: %#v", m.messages)
+		t.Fatalf("queued submit changed transcript while streaming: %#v", m.messages)
 	}
-	if m.composer.Value() != "second" {
-		t.Fatalf("second draft was modified while submit was blocked: %q", m.composer.Value())
+	if m.composer.Value() != "" {
+		t.Fatalf("queued draft was not cleared from composer: %q", m.composer.Value())
+	}
+	if len(m.queuedInputs) != 1 || m.queuedInputs[0] != "second" {
+		t.Fatalf("queued inputs=%#v", m.queuedInputs)
+	}
+}
+
+func TestQueuedSubmitStartsAfterCurrentStreamFinishes(t *testing.T) {
+	streamer := &sequenceStreamer{scripts: [][]provider.StreamEvent{
+		{{Type: provider.EventToken, Text: "first answer"}, {Type: provider.EventDone}},
+		{{Type: provider.EventToken, Text: "second answer"}, {Type: provider.EventDone}},
+	}}
+	m := NewWithStreamer("gpt-test", "openai-compatible", streamer)
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.composer.SetValue("first")
+	_, start := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	_, wait := m.Update(start())
+
+	m.composer.SetValue("second")
+	m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+
+	_, wait = m.Update(wait())
+	_, queued := m.Update(wait())
+	if queued == nil {
+		t.Fatal("stream completion did not schedule queued input")
+	}
+	_, secondStart := m.Update(queued())
+	if secondStart == nil || !m.streaming {
+		t.Fatal("queued input did not start next stream")
+	}
+	if len(streamer.reqs) != 1 {
+		t.Fatalf("second request started too early: %d", len(streamer.reqs))
+	}
+	m.Update(secondStart())
+	if len(streamer.reqs) != 2 {
+		t.Fatalf("queued request count=%d want=2", len(streamer.reqs))
+	}
+	last := streamer.reqs[1].Messages[len(streamer.reqs[1].Messages)-1].Content
+	if last != "second" {
+		t.Fatalf("queued request content=%q", last)
+	}
+}
+
+func TestEscClearsComposerWithoutCancellingStream(t *testing.T) {
+	streamer := newControlledStreamer()
+	m := NewWithStreamer("gpt-test", "openai-compatible", streamer)
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.composer.SetValue("first")
+	_, start := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	m.Update(start())
+
+	m.composer.SetValue("draft to clear")
+	m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
+	if m.composer.Value() != "" {
+		t.Fatalf("Esc did not clear draft: %q", m.composer.Value())
+	}
+	if !m.streaming {
+		t.Fatal("Esc with a draft should clear input without cancelling active stream")
 	}
 }
 

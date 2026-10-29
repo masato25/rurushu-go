@@ -57,40 +57,13 @@ func TestDuelTUIQueuesMultipleInstructionsWhileRunning(t *testing.T) {
 	}
 }
 
-func TestDuelTUIDoubleEscapeClearsCurrentInput(t *testing.T) {
+func TestDuelTUIEscapeClearsCurrentInput(t *testing.T) {
 	ui := newDuelUI(make(chan string, 4), make(chan duelUpdate, 4), func() {}, func() {})
 	ui.input.SetValue("尚未送出的主人指令")
 
 	ui.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
-	if got := ui.input.Value(); got != "尚未送出的主人指令" {
-		t.Fatalf("first escape cleared input: %q", got)
-	}
-	if !ui.escPending {
-		t.Fatal("first escape should arm input clear")
-	}
-
-	ui.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
 	if got := ui.input.Value(); got != "" {
-		t.Fatalf("second escape did not clear input: %q", got)
-	}
-	if ui.escPending {
-		t.Fatal("escape clear should disarm after clearing")
-	}
-}
-
-func TestDuelTUIDoubleEscapeMustBeConsecutive(t *testing.T) {
-	ui := newDuelUI(make(chan string, 4), make(chan duelUpdate, 4), func() {}, func() {})
-	ui.input.SetValue("draft")
-
-	ui.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
-	ui.Update(tea.KeyPressMsg{Code: 'x', Text: "x"})
-	ui.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
-
-	if got := ui.input.Value(); got == "" {
-		t.Fatal("non-consecutive escape presses should not clear input")
-	}
-	if !ui.escPending {
-		t.Fatal("escape after another key should arm a new clear sequence")
+		t.Fatalf("escape did not clear input: %q", got)
 	}
 }
 
