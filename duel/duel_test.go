@@ -128,6 +128,59 @@ func TestRunStopsOnlyAfterBothApprove(t *testing.T) {
 	}
 }
 
+func TestRunRetriesRoleOnceAfterConfiguredDelay(t *testing.T) {
+	clock := &fakeClock{now: time.Unix(1000, 0)}
+	streamer := &lifecycleStreamer{store: &lifecycleStore{}, outcomes: []lifecycleOutcome{
+		{err: errors.New("temporary COS failure")},
+		{output: `{"action":"propose_review","summary":"ready","next":"review","evidence":"ok"}`},
+		{output: `{"action":"agree_review","summary":"verified","next":"owner","evidence":"ok"}`},
+	}}
+	var retries []string
+	res, err := Run(context.Background(), streamer, Options{
+		Goal:       "recover",
+		LeftID:     "left",
+		RightID:    "right",
+		RetryDelay: time.Minute,
+		RetryClock: clock,
+		OnRetry: func(role string, round int, delay time.Duration, err error) error {
+			retries = append(retries, fmt.Sprintf("%s:%d:%s:%v", role, round, delay, err))
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != "owner_review" {
+		t.Fatalf("status=%q", res.Status)
+	}
+	if len(retries) != 1 || !strings.Contains(retries[0], "right:1:1m0s:temporary COS failure") {
+		t.Fatalf("retries=%#v", retries)
+	}
+	if got := clock.Now(); !got.Equal(time.Unix(1000, 0).Add(time.Minute)) {
+		t.Fatalf("clock=%v", got)
+	}
+	if len(streamer.store.sends) != 3 || streamer.store.sends[0].localID != "right" || streamer.store.sends[1].localID != "right" {
+		t.Fatalf("unexpected sends=%#v", streamer.store.sends)
+	}
+}
+
+func TestRunStopsAfterRetryAlsoFails(t *testing.T) {
+	clock := &fakeClock{now: time.Unix(2000, 0)}
+	streamer := &lifecycleStreamer{store: &lifecycleStore{}, outcomes: []lifecycleOutcome{
+		{err: errors.New("first failure")},
+		{err: errors.New("second failure")},
+	}}
+	_, err := Run(context.Background(), streamer, Options{
+		Goal: "recover", LeftID: "left", RightID: "right", RetryDelay: time.Minute, RetryClock: clock,
+	})
+	if err == nil || !strings.Contains(err.Error(), "retry after 1m0s failed: second failure") {
+		t.Fatalf("err=%v", err)
+	}
+	if len(streamer.store.sends) != 2 {
+		t.Fatalf("send count=%d want=2", len(streamer.store.sends))
+	}
+}
+
 func TestRunRecurringThreeTicksProduceThreeRightDecisions(t *testing.T) {
 	start := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
 	clock := &fakeClock{now: start}

@@ -428,7 +428,14 @@ Options:`)
 		stateMu.Lock()
 		runGoal, runLeftID, runRightID, runSummary := state.Goal, state.LeftID, state.RightID, recurringInitialSummary(state)
 		stateMu.Unlock()
-		baseOptions := duel.Options{Goal: runGoal, LeftID: runLeftID, RightID: runRightID, InitialSummary: runSummary, Instructions: instructions, OnTurn: func(role string, round int, turn duel.Turn) error {
+		baseOptions := duel.Options{Goal: runGoal, LeftID: runLeftID, RightID: runRightID, InitialSummary: runSummary, Instructions: instructions, RetryDelay: time.Minute, OnRetry: func(role string, round int, delay time.Duration, retryErr error) error {
+			select {
+			case updates <- duelUpdate{role: role, round: round, err: retryErr, retry: true, retryAfter: delay}:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}, OnTurn: func(role string, round int, turn duel.Turn) error {
 			stateMu.Lock()
 			defer stateMu.Unlock()
 			shownRound := applyDuelTurnState(&state, role, turn)
@@ -492,8 +499,31 @@ Options:`)
 			_ = saveDuelState(path, state)
 		}
 	}
+	newRoleSession := func(role string) (string, error) {
+		stateMu.Lock()
+		defer stateMu.Unlock()
+		session, createErr := store.StartSession("chatgpt-web", "cos")
+		if createErr != nil {
+			return "", createErr
+		}
+		switch role {
+		case "left":
+			state.LeftID = session.ID
+		case "right":
+			state.RightID = session.ID
+		default:
+			return "", fmt.Errorf("unknown duel role %q", role)
+		}
+		state.Status = "running"
+		state.LastError = ""
+		if saveErr := saveDuelState(path, state); saveErr != nil {
+			return "", saveErr
+		}
+		return session.ID, nil
+	}
 	ui := newDuelUI(instructions, updates, run, cancelAndPersist, state.LeftID, state.RightID)
 	ui.setAuxiliaryWorkspace(tuiPkg.NewAuxiliaryWorkspace(abs, terminalService))
+	ui.setNewSessionHandler(newRoleSession)
 	_, err = tea.NewProgram(ui).Run()
 	return err
 }

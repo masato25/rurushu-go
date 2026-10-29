@@ -17,13 +17,15 @@ import (
 )
 
 type duelUpdate struct {
-	role      string
-	round     int
-	roundTime time.Time
-	turn      duel.Turn
-	err       error
-	done      bool
-	result    duel.Result
+	role       string
+	round      int
+	roundTime  time.Time
+	turn       duel.Turn
+	err        error
+	done       bool
+	result     duel.Result
+	retry      bool
+	retryAfter time.Duration
 }
 type duelUI struct {
 	width, height         int
@@ -39,6 +41,7 @@ type duelUI struct {
 	leftID, rightID       string
 	modal                 string
 	aux                   *tui.AuxiliaryWorkspace
+	newSession            func(role string) (string, error)
 }
 
 type duelModalLayout struct {
@@ -74,8 +77,9 @@ func newDuelUI(instructions chan string, updates chan duelUpdate, run func(), ca
 	return m
 }
 
-func (m *duelUI) setAuxiliaryWorkspace(aux *tui.AuxiliaryWorkspace) { m.aux = aux }
-func awaitDuelUpdate(ch <-chan duelUpdate) tea.Cmd                  { return func() tea.Msg { return <-ch } }
+func (m *duelUI) setAuxiliaryWorkspace(aux *tui.AuxiliaryWorkspace)         { m.aux = aux }
+func (m *duelUI) setNewSessionHandler(fn func(role string) (string, error)) { m.newSession = fn }
+func awaitDuelUpdate(ch <-chan duelUpdate) tea.Cmd                          { return func() tea.Msg { return <-ch } }
 func (m *duelUI) Init() tea.Cmd {
 	go m.run()
 	return tea.Batch(m.input.Focus(), awaitDuelUpdate(m.updates))
@@ -99,6 +103,10 @@ func (m *duelUI) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.left.SetContent(strings.Join(m.leftLines, "\n\n"))
 		m.right.SetContent(strings.Join(m.rightLines, "\n\n"))
 	case duelUpdate:
+		if v.retry {
+			m.status = fmt.Sprintf("%s session 發生錯誤：%v · %s 後自動重試一次", strings.ToUpper(v.role), v.err, v.retryAfter)
+			return m, awaitDuelUpdate(m.updates)
+		}
 		if v.done {
 			// Notify the owner once when both agents request review.
 			// Use Bubble Tea's raw terminal output to avoid corrupting the TUI.
@@ -186,6 +194,31 @@ func (m *duelUI) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		case "enter":
 			note := strings.TrimSpace(m.input.Value())
 			if note != "" {
+				if role, ok := parseDuelNewSessionCommand(note); ok {
+					m.input.Reset()
+					if !m.stopped {
+						m.status = "/new 只能在 duel 停止後使用，避免正在執行的 session 被替換"
+						return m, m.input.Focus()
+					}
+					if m.newSession == nil {
+						m.status = "目前無法建立新的 duel session"
+						return m, m.input.Focus()
+					}
+					id, err := m.newSession(role)
+					if err != nil {
+						m.status = fmt.Sprintf("建立新 %s session 失敗：%v", strings.ToUpper(role), err)
+						return m, m.input.Focus()
+					}
+					if role == "left" {
+						m.leftID = id
+					} else {
+						m.rightID = id
+					}
+					m.stopped = false
+					m.status = fmt.Sprintf("已建立新的 %s session，接續目前 duel", strings.ToUpper(role))
+					go m.run()
+					return m, awaitDuelUpdate(m.updates)
+				}
 				select {
 				case m.instructions <- note:
 					m.status = fmt.Sprintf("主人指令已預排 · 待送 %d 則", len(m.instructions))
@@ -218,6 +251,17 @@ func (m *duelUI) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 	return m, nil
+}
+
+func parseDuelNewSessionCommand(input string) (string, bool) {
+	fields := strings.Fields(strings.ToLower(strings.TrimSpace(input)))
+	if len(fields) != 2 || fields[0] != "/new" {
+		return "", false
+	}
+	if fields[1] != "left" && fields[1] != "right" {
+		return "", false
+	}
+	return fields[1], true
 }
 
 func renderDuelTurn(update duelUpdate, width int) string {
@@ -300,7 +344,7 @@ func (m *duelUI) View() tea.View {
 	if pending := len(m.instructions); pending > 0 && !strings.Contains(status, "待送") {
 		status += fmt.Sprintf(" · 待送指令 %d 則", pending)
 	}
-	footer := "\n" + status + "\n" + m.input.View() + "\nF2 Setup · F3 Review · F4 Terminal · F5 Files · Enter 送出/預排 · Esc 清空輸入 · Ctrl+C 離開 · Ctrl+R 重試 · Shift+Enter 換行"
+	footer := "\n" + status + "\n" + m.input.View() + "\nF2 Setup · F3 Review · F4 Terminal · F5 Files · /new left|right 換 session · Enter 送出/預排 · Esc 清空輸入 · Ctrl+C 離開 · Ctrl+R 重試 · Shift+Enter 換行"
 	result := tea.NewView(view + footer)
 	result.AltScreen = true
 	result.MouseMode = tea.MouseModeCellMotion

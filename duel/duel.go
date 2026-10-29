@@ -26,6 +26,9 @@ type Options struct {
 	Goal, LeftID, RightID, InitialSummary string
 	OnTurn                                func(role string, round int, turn Turn) error
 	Instructions                          <-chan string
+	RetryDelay                            time.Duration
+	RetryClock                            Clock
+	OnRetry                               func(role string, round int, delay time.Duration, err error) error
 }
 type Result struct {
 	Rounds  int
@@ -75,6 +78,32 @@ func call(ctx context.Context, s Streamer, id, prompt string) (Turn, error) {
 	// Never replay the task itself and never retry arbitrary malformed prose:
 	// LEFT may already have completed real work in the previous native turn.
 	return callOnce(ctx, s, id, "Your previous response rendered as an empty content-reference placeholder. Do not repeat or redo any task or tool work. Reply only with the final decision for the work already completed as ONE JSON object containing action, summary, next, evidence. No markdown, tools, citations, or explanation outside JSON.")
+}
+
+func callWithRetry(ctx context.Context, s Streamer, id, prompt, role string, round int, o Options) (Turn, error) {
+	turn, err := call(ctx, s, id, prompt)
+	if err == nil || ctx.Err() != nil || o.RetryDelay <= 0 {
+		return turn, err
+	}
+	if o.OnRetry != nil {
+		if notifyErr := o.OnRetry(role, round, o.RetryDelay, err); notifyErr != nil {
+			return Turn{}, notifyErr
+		}
+	}
+	clock := o.RetryClock
+	if clock == nil {
+		clock = realClock{}
+	}
+	select {
+	case <-ctx.Done():
+		return Turn{}, ctx.Err()
+	case <-clock.After(o.RetryDelay):
+	}
+	turn, retryErr := call(ctx, s, id, prompt)
+	if retryErr != nil {
+		return Turn{}, fmt.Errorf("retry after %s failed: %w", o.RetryDelay, retryErr)
+	}
+	return turn, nil
 }
 
 type decisionFormatError struct {
@@ -185,7 +214,7 @@ Owner instructions (highest task priority): %s
 Current evidence from LEFT: %s
 Decide the next concrete, testable work step. If stuck, research on the web yourself using available browsing tools. Report verified source URLs and findings in evidence; if browsing is unavailable use action=research and next must request external research from LEFT. If no actionable local work exists and progress requires an external event or owner authorization, action=blocked; do not repeat previous work. If you believe the goal is satisfied, action=propose_review with reasons in evidence. Never claim an online search unless you actually performed it.
 Reply ONLY JSON: {"action":"plan|research|blocked|propose_review","summary":"current concise summary","next":"specific instructions or precise unblock condition","evidence":"test evidence or caveats"}`, o.Goal, ownerNotes, previous)
-		right, err := call(ctx, s, o.RightID, rightPrompt)
+		right, err := callWithRetry(ctx, s, o.RightID, rightPrompt, "right", round, o)
 		if err != nil {
 			return result, fmt.Errorf("right round %d: %w", round, err)
 		}
@@ -206,7 +235,7 @@ RIGHT's requested next step: %s
 RIGHT's evidence: %s
 Execute or investigate using available tools, verify results, and report facts. If action is research, collect current online sources if browser/search tools are available; never invent citations. If RIGHT says blocked, independently check whether any actionable work remains; reply action=blocked if both sides must wait for an external condition, without repeating tests or making unnecessary requests. If action is propose_review, independently verify completion, and action=agree_review only if genuinely ready; otherwise action=continue.
 Reply ONLY JSON: {"action":"continue|blocked|agree_review","summary":"work completed and remaining issues","next":"what RIGHT should consider or unblock condition","evidence":"tests or URLs actually checked"}`, o.Goal, ownerNotes, right.Summary, right.Action, right.Next, right.Evidence)
-		left, err := call(ctx, s, o.LeftID, leftPrompt)
+		left, err := callWithRetry(ctx, s, o.LeftID, leftPrompt, "left", round, o)
 		if err != nil {
 			return result, fmt.Errorf("left round %d: %w", round, err)
 		}
@@ -284,7 +313,7 @@ Owner instructions (highest task priority): %s
 Current evidence from LEFT: %s
 Decide the next concrete, testable work step. Use action=wait when no LEFT work is useful now but a future poll may observe a changed market/RPC/process condition; wait must include the current observation/evidence and what the next poll should re-check. Use blocked only when progress requires owner authorization, a secret/manual action, or another external condition this loop cannot independently resolve. If stuck on research, research on the web yourself using available browsing tools; use action=research when LEFT should perform external research. If you believe the goal is satisfied, action=propose_review. Never claim an online search unless you actually performed it.
 Reply ONLY JSON: {"action":"plan|research|wait|blocked|propose_review","summary":"current concise summary or observation","next":"specific instructions, next observation target, or unblock condition","evidence":"test evidence or caveats"}`, o.Goal, ownerNotes, previous)
-		right, err := call(ctx, s, o.RightID, rightPrompt)
+		right, err := callWithRetry(ctx, s, o.RightID, rightPrompt, "right", round, o.Options)
 		if err != nil {
 			return result, fmt.Errorf("right round %d: %w", round, err)
 		}
@@ -323,7 +352,7 @@ RIGHT's requested next step: %s
 RIGHT's evidence: %s
 Execute or investigate using available tools, verify results, and report facts. If action is research, collect current online sources if browser/search tools are available; never invent citations. If RIGHT says blocked, independently check whether any actionable work remains; reply action=blocked if both sides must wait for an external condition, without repeating tests or making unnecessary requests. If action is propose_review, independently verify completion, and action=agree_review only if genuinely ready; otherwise action=continue.
 Reply ONLY JSON: {"action":"continue|blocked|agree_review","summary":"work completed and remaining issues","next":"what RIGHT should consider or unblock condition","evidence":"tests or URLs actually checked"}`, o.Goal, ownerNotes, right.Summary, right.Action, right.Next, right.Evidence)
-		left, err := call(ctx, s, o.LeftID, leftPrompt)
+		left, err := callWithRetry(ctx, s, o.LeftID, leftPrompt, "left", round, o.Options)
 		if err != nil {
 			return result, fmt.Errorf("left round %d: %w", round, err)
 		}

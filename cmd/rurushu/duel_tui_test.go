@@ -68,6 +68,76 @@ func TestDuelTUIEscapeClearsCurrentInput(t *testing.T) {
 	}
 }
 
+func TestParseDuelNewSessionCommand(t *testing.T) {
+	for _, tc := range []struct {
+		input, role string
+		ok          bool
+	}{
+		{"/new left", "left", true},
+		{" /NEW RIGHT ", "right", true},
+		{"/new middle", "", false},
+		{"/new left extra", "", false},
+	} {
+		role, ok := parseDuelNewSessionCommand(tc.input)
+		if role != tc.role || ok != tc.ok {
+			t.Fatalf("parse %q = (%q,%v), want (%q,%v)", tc.input, role, ok, tc.role, tc.ok)
+		}
+	}
+}
+
+func TestDuelTUINewSessionRequiresStoppedDuel(t *testing.T) {
+	ui := newDuelUI(make(chan string, 4), make(chan duelUpdate, 4), func() {}, func() {})
+	called := false
+	ui.setNewSessionHandler(func(role string) (string, error) {
+		called = true
+		return "ses-new", nil
+	})
+	ui.input.SetValue("/new left")
+	ui.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if called {
+		t.Fatal("running duel replaced a session")
+	}
+	if !strings.Contains(ui.status, "只能在 duel 停止後使用") {
+		t.Fatalf("status=%q", ui.status)
+	}
+}
+
+func TestDuelTUINewSessionReplacesStoppedRoleAndRestarts(t *testing.T) {
+	runCalled := make(chan struct{}, 1)
+	ui := newDuelUI(make(chan string, 4), make(chan duelUpdate, 4), func() { runCalled <- struct{}{} }, func() {}, "ses-left-old", "ses-right")
+	ui.stopped = true
+	ui.setNewSessionHandler(func(role string) (string, error) {
+		if role != "left" {
+			t.Fatalf("role=%q", role)
+		}
+		return "ses-left-new", nil
+	})
+	ui.input.SetValue("/new left")
+	_, cmd := ui.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("restart did not arm update listener")
+	}
+	if ui.leftID != "ses-left-new" || ui.stopped {
+		t.Fatalf("leftID=%q stopped=%v", ui.leftID, ui.stopped)
+	}
+	select {
+	case <-runCalled:
+	case <-time.After(time.Second):
+		t.Fatal("duel run was not restarted")
+	}
+}
+
+func TestDuelTUIShowsAutomaticRetryStatus(t *testing.T) {
+	ui := newDuelUI(make(chan string, 4), make(chan duelUpdate, 4), func() {}, func() {})
+	_, cmd := ui.Update(duelUpdate{role: "right", round: 2, retry: true, retryAfter: time.Minute, err: errors.New("COS unavailable")})
+	if cmd == nil {
+		t.Fatal("retry status did not keep listening for updates")
+	}
+	if !strings.Contains(ui.status, "RIGHT session") || !strings.Contains(ui.status, "1m0s") {
+		t.Fatalf("status=%q", ui.status)
+	}
+}
+
 func TestDuelTUIRoutesFunctionKeysToAuxiliaryWorkspace(t *testing.T) {
 	root := t.TempDir()
 	service := tui.NewTerminalService(root)
