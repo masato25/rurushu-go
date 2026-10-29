@@ -19,6 +19,7 @@ import (
 	"github.com/masato25/rurushu-go/duel"
 	"github.com/masato25/rurushu-go/projectstate"
 	"github.com/masato25/rurushu-go/provider"
+	tuiPkg "github.com/masato25/rurushu-go/tui"
 )
 
 type duelState struct {
@@ -418,6 +419,8 @@ Options:`)
 	p.Stderr = nil
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	terminalService := tuiPkg.NewTerminalService(abs)
+	defer terminalService.Close()
 	var stateMu sync.Mutex
 	instructions := make(chan string, 128)
 	updates := make(chan duelUpdate, 128)
@@ -490,6 +493,7 @@ Options:`)
 		}
 	}
 	ui := newDuelUI(instructions, updates, run, cancelAndPersist, state.LeftID, state.RightID)
+	ui.setAuxiliaryWorkspace(tuiPkg.NewAuxiliaryWorkspace(abs, terminalService))
 	_, err = tea.NewProgram(ui).Run()
 	return err
 }

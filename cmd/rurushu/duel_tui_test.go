@@ -10,6 +10,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/masato25/rurushu-go/duel"
+	"github.com/masato25/rurushu-go/tui"
 )
 
 func TestDuelTUISendsOwnerInstruction(t *testing.T) {
@@ -64,6 +65,27 @@ func TestDuelTUIEscapeClearsCurrentInput(t *testing.T) {
 	ui.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
 	if got := ui.input.Value(); got != "" {
 		t.Fatalf("escape did not clear input: %q", got)
+	}
+}
+
+func TestDuelTUIRoutesFunctionKeysToAuxiliaryWorkspace(t *testing.T) {
+	root := t.TempDir()
+	service := tui.NewTerminalService(root)
+	defer service.Close()
+	uiModel := newDuelUI(make(chan string, 4), make(chan duelUpdate, 4), func() {}, func() {})
+	aux := tui.NewAuxiliaryWorkspace(root, service)
+	uiModel.setAuxiliaryWorkspace(aux)
+	uiModel.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+
+	uiModel.Update(tea.KeyPressMsg{Code: tea.KeyF2})
+	if !aux.Active() || !strings.Contains(uiModel.View().Content, "rurushu setup") {
+		t.Fatal("duel F2 did not open shared setup panel")
+	}
+	uiModel.Update(tea.KeyPressMsg{Code: tea.KeyF2})
+
+	uiModel.Update(tea.KeyPressMsg{Code: tea.KeyF5})
+	if !aux.Active() || !strings.Contains(uiModel.View().Content, "Files") {
+		t.Fatal("duel F5 did not open shared file browser")
 	}
 }
 

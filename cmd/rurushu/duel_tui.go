@@ -13,6 +13,7 @@ import (
 	"charm.land/glamour/v2/styles"
 	"charm.land/lipgloss/v2"
 	"github.com/masato25/rurushu-go/duel"
+	"github.com/masato25/rurushu-go/tui"
 )
 
 type duelUpdate struct {
@@ -37,6 +38,7 @@ type duelUI struct {
 	status                string
 	leftID, rightID       string
 	modal                 string
+	aux                   *tui.AuxiliaryWorkspace
 }
 
 type duelModalLayout struct {
@@ -71,12 +73,19 @@ func newDuelUI(instructions chan string, updates chan duelUpdate, run func(), ca
 	}
 	return m
 }
-func awaitDuelUpdate(ch <-chan duelUpdate) tea.Cmd { return func() tea.Msg { return <-ch } }
+
+func (m *duelUI) setAuxiliaryWorkspace(aux *tui.AuxiliaryWorkspace) { m.aux = aux }
+func awaitDuelUpdate(ch <-chan duelUpdate) tea.Cmd                  { return func() tea.Msg { return <-ch } }
 func (m *duelUI) Init() tea.Cmd {
 	go m.run()
 	return tea.Batch(m.input.Focus(), awaitDuelUpdate(m.updates))
 }
 func (m *duelUI) Update(message tea.Msg) (tea.Model, tea.Cmd) {
+	if m.aux != nil {
+		if handled, cmd := m.aux.Update(message); handled {
+			return m, cmd
+		}
+	}
 	switch v := message.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = v.Width, v.Height
@@ -269,6 +278,11 @@ func (m *duelUI) modalLayout() duelModalLayout {
 }
 
 func (m *duelUI) View() tea.View {
+	if m.aux != nil {
+		if view, ok := m.aux.View(); ok {
+			return view
+		}
+	}
 	w := max(16, (m.width-3)/2)
 	headline := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#E6B450"))
 	leftTitle := " LEFT · 執行者 "
@@ -286,7 +300,7 @@ func (m *duelUI) View() tea.View {
 	if pending := len(m.instructions); pending > 0 && !strings.Contains(status, "待送") {
 		status += fmt.Sprintf(" · 待送指令 %d 則", pending)
 	}
-	footer := "\n" + status + "\n" + m.input.View() + "\nEnter 送出/預排 · Esc 清空輸入 · Ctrl+C 離開 · Ctrl+R 重試 · Shift+Enter 換行"
+	footer := "\n" + status + "\n" + m.input.View() + "\nF2 Setup · F3 Review · F4 Terminal · F5 Files · Enter 送出/預排 · Esc 清空輸入 · Ctrl+C 離開 · Ctrl+R 重試 · Shift+Enter 換行"
 	result := tea.NewView(view + footer)
 	result.AltScreen = true
 	result.MouseMode = tea.MouseModeCellMotion
