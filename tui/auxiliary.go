@@ -19,6 +19,8 @@ type AuxiliaryWorkspace struct {
 	terminal        *terminalWorkspace
 	terminalService *TerminalService
 	errText         string
+	goal            string
+	goalSave        func(string) error
 }
 
 func NewAuxiliaryWorkspace(cwd string, service *TerminalService) *AuxiliaryWorkspace {
@@ -26,6 +28,11 @@ func NewAuxiliaryWorkspace(cwd string, service *TerminalService) *AuxiliaryWorks
 		service = NewTerminalService(cwd)
 	}
 	return &AuxiliaryWorkspace{cwd: cwd, terminalService: service}
+}
+
+func (a *AuxiliaryWorkspace) SetGoalEditor(goal string, save func(string) error) {
+	a.goal = strings.TrimSpace(goal)
+	a.goalSave = save
 }
 
 func (a *AuxiliaryWorkspace) Active() bool {
@@ -141,6 +148,15 @@ func (a *AuxiliaryWorkspace) Update(msg tea.Msg) (bool, tea.Cmd) {
 			}
 			a.setup = NewSetupModel(cfg)
 			a.setup.embedded = true
+			if a.goalSave != nil {
+				a.setup.EnableGoalEditor(a.goal, func(goal string) error {
+					if err := a.goalSave(goal); err != nil {
+						return err
+					}
+					a.goal = strings.TrimSpace(goal)
+					return nil
+				})
+			}
 			a.setup.Update(tea.WindowSizeMsg{Width: a.width, Height: a.height})
 			return true, a.setup.Init()
 		case "f3":

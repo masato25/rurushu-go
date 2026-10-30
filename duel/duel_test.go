@@ -128,6 +128,40 @@ func TestRunStopsOnlyAfterBothApprove(t *testing.T) {
 	}
 }
 
+func TestRunUsesUpdatedGoalForNextRolePrompt(t *testing.T) {
+	s := &scripted{outputs: []string{
+		`{"action":"plan","summary":"do work","next":"implement","evidence":"none"}`,
+		`{"action":"blocked","summary":"done for now","next":"wait","evidence":"checked"}`,
+		`{"action":"blocked","summary":"stop","next":"owner","evidence":"checked"}`,
+		`{"action":"blocked","summary":"stop","next":"owner","evidence":"checked"}`,
+	}}
+	goal := "old goal"
+	_, err := Run(context.Background(), s, Options{
+		Goal:    goal,
+		LeftID:  "left",
+		RightID: "right",
+		GoalFunc: func() string {
+			return goal
+		},
+		OnTurn: func(role string, round int, turn Turn) error {
+			if role == "right" && round == 1 {
+				goal = "updated goal"
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(s.requests) < 2 {
+		t.Fatalf("requests=%d", len(s.requests))
+	}
+	leftPrompt := s.requests[1].Messages[0].Content
+	if !strings.Contains(leftPrompt, "Goal: updated goal") {
+		t.Fatalf("left prompt did not use updated goal: %q", leftPrompt)
+	}
+}
+
 func TestRunRetriesRoleOnceAfterConfiguredDelay(t *testing.T) {
 	clock := &fakeClock{now: time.Unix(1000, 0)}
 	streamer := &lifecycleStreamer{store: &lifecycleStore{}, outcomes: []lifecycleOutcome{

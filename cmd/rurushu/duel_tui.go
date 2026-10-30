@@ -42,6 +42,8 @@ type duelUI struct {
 	modal                 string
 	aux                   *tui.AuxiliaryWorkspace
 	newSession            func(role string) (string, error)
+	setInitialGoal        func(goal string) error
+	waitingForGoal        bool
 }
 
 type duelModalLayout struct {
@@ -79,8 +81,18 @@ func newDuelUI(instructions chan string, updates chan duelUpdate, run func(), ca
 
 func (m *duelUI) setAuxiliaryWorkspace(aux *tui.AuxiliaryWorkspace)         { m.aux = aux }
 func (m *duelUI) setNewSessionHandler(fn func(role string) (string, error)) { m.newSession = fn }
-func awaitDuelUpdate(ch <-chan duelUpdate) tea.Cmd                          { return func() tea.Msg { return <-ch } }
+func (m *duelUI) setInitialGoalHandler(fn func(goal string) error) {
+	m.setInitialGoal = fn
+	m.waitingForGoal = true
+	m.stopped = true
+	m.status = "尚未設定 goal · 請直接輸入第一則目標後按 Enter"
+	m.input.Placeholder = "輸入 duel goal，Enter 後建立 LEFT/RIGHT session 並開始"
+}
+func awaitDuelUpdate(ch <-chan duelUpdate) tea.Cmd { return func() tea.Msg { return <-ch } }
 func (m *duelUI) Init() tea.Cmd {
+	if m.waitingForGoal {
+		return m.input.Focus()
+	}
 	go m.run()
 	return tea.Batch(m.input.Focus(), awaitDuelUpdate(m.updates))
 }
@@ -194,6 +206,23 @@ func (m *duelUI) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		case "enter":
 			note := strings.TrimSpace(m.input.Value())
 			if note != "" {
+				if m.waitingForGoal {
+					if m.setInitialGoal == nil {
+						m.status = "無法初始化 duel goal"
+						return m, m.input.Focus()
+					}
+					if err := m.setInitialGoal(note); err != nil {
+						m.status = "建立 duel 失敗：" + err.Error()
+						return m, m.input.Focus()
+					}
+					m.input.Reset()
+					m.waitingForGoal = false
+					m.stopped = false
+					m.input.Placeholder = "主人輸入指令；思考中也可 Enter 預排，完成後自動接續"
+					m.status = "已設定 goal，開始左右互搏"
+					go m.run()
+					return m, awaitDuelUpdate(m.updates)
+				}
 				if role, ok := parseDuelNewSessionCommand(note); ok {
 					m.input.Reset()
 					if !m.stopped {

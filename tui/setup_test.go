@@ -62,3 +62,24 @@ func TestSetupEnterAdvancesThenSaves(t *testing.T) {
 		t.Fatal("expected setup to save on final enter")
 	}
 }
+
+func TestSetupGoalEditorDisplaysAndSavesGoal(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	m := NewSetupModel(rurushuconfig.Defaults())
+	m.inputs[setupModel].SetValue("test-model")
+	var saved string
+	m.EnableGoalEditor("current duel goal", func(goal string) error {
+		saved = goal
+		return nil
+	})
+	if view := m.View().Content; !strings.Contains(view, "Duel goal") || !strings.Contains(view, "current duel goal") {
+		t.Fatalf("goal editor missing from setup: %q", view)
+	}
+	m.inputs[len(m.inputs)-1].SetValue("updated duel goal")
+	if err := m.save(); err != nil {
+		t.Fatal(err)
+	}
+	if saved != "updated duel goal" {
+		t.Fatalf("saved goal=%q", saved)
+	}
+}

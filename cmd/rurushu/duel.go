@@ -294,6 +294,26 @@ func resolveDuelState(store *projectstate.Store, path, requestedGoal string, res
 	return state, false, nil
 }
 
+func createDuelState(store *projectstate.Store, path, goal string) (duelState, error) {
+	goal = strings.TrimSpace(goal)
+	if goal == "" {
+		return duelState{}, errors.New("duel goal is required")
+	}
+	left, err := store.StartSession("chatgpt-web", "cos")
+	if err != nil {
+		return duelState{}, err
+	}
+	right, err := store.StartSession("chatgpt-web", "cos")
+	if err != nil {
+		return duelState{}, err
+	}
+	state := duelState{Goal: goal, LeftID: left.ID, RightID: right.ID, Status: "running"}
+	if err := saveDuelState(path, state); err != nil {
+		return duelState{}, err
+	}
+	return state, nil
+}
+
 func runDuel(args []string) error {
 	fs := flag.NewFlagSet("rurushu duel", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -380,12 +400,24 @@ Options:`)
 	if requestedGoal == "" {
 		requestedGoal = strings.TrimSpace(strings.Join(fs.Args(), " "))
 	}
-	state, reused, err := resolveDuelState(store, path, requestedGoal, *resume, *newDuel)
-	if err != nil {
-		return err
+	waitingForGoal := false
+	var state duelState
+	var reused bool
+	if requestedGoal == "" && !*resume {
+		if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
+			waitingForGoal = true
+		} else if statErr != nil {
+			return statErr
+		}
+	}
+	if !waitingForGoal {
+		state, reused, err = resolveDuelState(store, path, requestedGoal, *resume, *newDuel)
+		if err != nil {
+			return err
+		}
 	}
 	now := time.Now()
-	if reused && state.Mode == "recurring" {
+	if !waitingForGoal && reused && state.Mode == "recurring" {
 		if err := updateRecurringSchedule(&state, now, *runFor, runForSet, *pollEvery, pollEverySet); err != nil {
 			return err
 		}
@@ -394,7 +426,7 @@ Options:`)
 				return err
 			}
 		}
-	} else if *runFor > 0 {
+	} else if !waitingForGoal && *runFor > 0 {
 		state.Mode = "recurring"
 		state.PollEvery = pollEvery.String()
 		state.StartedAt = now
@@ -404,7 +436,7 @@ Options:`)
 			return err
 		}
 	}
-	if reused {
+	if !waitingForGoal && reused {
 		state.Status = "running"
 		state.LastError = ""
 		if err = saveDuelState(path, state); err != nil {
@@ -428,7 +460,11 @@ Options:`)
 		stateMu.Lock()
 		runGoal, runLeftID, runRightID, runSummary := state.Goal, state.LeftID, state.RightID, recurringInitialSummary(state)
 		stateMu.Unlock()
-		baseOptions := duel.Options{Goal: runGoal, LeftID: runLeftID, RightID: runRightID, InitialSummary: runSummary, Instructions: instructions, RetryDelay: time.Minute, OnRetry: func(role string, round int, delay time.Duration, retryErr error) error {
+		baseOptions := duel.Options{Goal: runGoal, LeftID: runLeftID, RightID: runRightID, InitialSummary: runSummary, Instructions: instructions, RetryDelay: time.Minute, GoalFunc: func() string {
+			stateMu.Lock()
+			defer stateMu.Unlock()
+			return state.Goal
+		}, OnRetry: func(role string, round int, delay time.Duration, retryErr error) error {
 			select {
 			case updates <- duelUpdate{role: role, round: round, err: retryErr, retry: true, retryAfter: delay}:
 				return nil
@@ -522,8 +558,46 @@ Options:`)
 		return session.ID, nil
 	}
 	ui := newDuelUI(instructions, updates, run, cancelAndPersist, state.LeftID, state.RightID)
-	ui.setAuxiliaryWorkspace(tuiPkg.NewAuxiliaryWorkspace(abs, terminalService))
+	aux := tuiPkg.NewAuxiliaryWorkspace(abs, terminalService)
+	updateGoal := func(goal string) error {
+		goal = strings.TrimSpace(goal)
+		if goal == "" {
+			return errors.New("duel goal is required")
+		}
+		stateMu.Lock()
+		defer stateMu.Unlock()
+		state.Goal = goal
+		return saveDuelState(path, state)
+	}
+	if !waitingForGoal {
+		aux.SetGoalEditor(state.Goal, updateGoal)
+	}
+	ui.setAuxiliaryWorkspace(aux)
 	ui.setNewSessionHandler(newRoleSession)
+	if waitingForGoal {
+		ui.setInitialGoalHandler(func(goal string) error {
+			created, createErr := createDuelState(store, path, goal)
+			if createErr != nil {
+				return createErr
+			}
+			if *runFor > 0 {
+				created.Mode = "recurring"
+				created.PollEvery = pollEvery.String()
+				created.StartedAt = time.Now()
+				created.Deadline = created.StartedAt.Add(*runFor)
+				created.NextPollAt = created.StartedAt
+				if saveErr := saveDuelState(path, created); saveErr != nil {
+					return saveErr
+				}
+			}
+			stateMu.Lock()
+			state = created
+			stateMu.Unlock()
+			ui.leftID, ui.rightID = created.LeftID, created.RightID
+			aux.SetGoalEditor(created.Goal, updateGoal)
+			return nil
+		})
+	}
 	_, err = tea.NewProgram(ui).Run()
 	return err
 }

@@ -24,12 +24,23 @@ type Streamer interface {
 }
 type Options struct {
 	Goal, LeftID, RightID, InitialSummary string
+	GoalFunc                              func() string
 	OnTurn                                func(role string, round int, turn Turn) error
 	Instructions                          <-chan string
 	RetryDelay                            time.Duration
 	RetryClock                            Clock
 	OnRetry                               func(role string, round int, delay time.Duration, err error) error
 }
+
+func currentGoal(o Options) string {
+	if o.GoalFunc != nil {
+		if goal := strings.TrimSpace(o.GoalFunc()); goal != "" {
+			return goal
+		}
+	}
+	return strings.TrimSpace(o.Goal)
+}
+
 type Result struct {
 	Rounds  int
 	Status  string
@@ -196,7 +207,7 @@ func parseTurn(raw string) (Turn, error) {
 // Run has no maximum rounds. It stops normally only on bilateral agreement.
 // Cancellation or provider errors are exceptional exits, never success.
 func Run(ctx context.Context, s Streamer, o Options) (Result, error) {
-	if strings.TrimSpace(o.Goal) == "" || o.LeftID == "" || o.RightID == "" || o.LeftID == o.RightID {
+	if currentGoal(o) == "" || o.LeftID == "" || o.RightID == "" || o.LeftID == o.RightID {
 		return Result{}, errors.New("a goal and two distinct session IDs are required")
 	}
 	result := Result{Status: "running"}
@@ -209,11 +220,12 @@ func Run(ctx context.Context, s Streamer, o Options) (Result, error) {
 			return result, err
 		}
 		ownerNotes := drainInstructions(o.Instructions)
+		goal := currentGoal(o)
 		rightPrompt := fmt.Sprintf(`You are RIGHT (decision/review). Goal: %s
 Owner instructions (highest task priority): %s
 Current evidence from LEFT: %s
 Decide the next concrete, testable work step. If stuck, research on the web yourself using available browsing tools. Report verified source URLs and findings in evidence; if browsing is unavailable use action=research and next must request external research from LEFT. If no actionable local work exists and progress requires an external event or owner authorization, action=blocked; do not repeat previous work. If you believe the goal is satisfied, action=propose_review with reasons in evidence. Never claim an online search unless you actually performed it.
-Reply ONLY JSON: {"action":"plan|research|blocked|propose_review","summary":"current concise summary","next":"specific instructions or precise unblock condition","evidence":"test evidence or caveats"}`, o.Goal, ownerNotes, previous)
+Reply ONLY JSON: {"action":"plan|research|blocked|propose_review","summary":"current concise summary","next":"specific instructions or precise unblock condition","evidence":"test evidence or caveats"}`, goal, ownerNotes, previous)
 		right, err := callWithRetry(ctx, s, o.RightID, rightPrompt, "right", round, o)
 		if err != nil {
 			return result, fmt.Errorf("right round %d: %w", round, err)
@@ -227,6 +239,7 @@ Reply ONLY JSON: {"action":"plan|research|blocked|propose_review","summary":"cur
 			}
 		}
 		ownerNotes = strings.TrimSpace(ownerNotes + "\n" + drainInstructions(o.Instructions))
+		goal = currentGoal(o)
 		leftPrompt := fmt.Sprintf(`You are LEFT (implementation/execution). Goal: %s
 Owner instructions (highest task priority): %s
 RIGHT's assessment: %s
@@ -234,7 +247,7 @@ RIGHT's action: %s
 RIGHT's requested next step: %s
 RIGHT's evidence: %s
 Execute or investigate using available tools, verify results, and report facts. If action is research, collect current online sources if browser/search tools are available; never invent citations. If RIGHT says blocked, independently check whether any actionable work remains; reply action=blocked if both sides must wait for an external condition, without repeating tests or making unnecessary requests. If action is propose_review, independently verify completion, and action=agree_review only if genuinely ready; otherwise action=continue.
-Reply ONLY JSON: {"action":"continue|blocked|agree_review","summary":"work completed and remaining issues","next":"what RIGHT should consider or unblock condition","evidence":"tests or URLs actually checked"}`, o.Goal, ownerNotes, right.Summary, right.Action, right.Next, right.Evidence)
+Reply ONLY JSON: {"action":"continue|blocked|agree_review","summary":"work completed and remaining issues","next":"what RIGHT should consider or unblock condition","evidence":"tests or URLs actually checked"}`, goal, ownerNotes, right.Summary, right.Action, right.Next, right.Evidence)
 		left, err := callWithRetry(ctx, s, o.LeftID, leftPrompt, "left", round, o)
 		if err != nil {
 			return result, fmt.Errorf("left round %d: %w", round, err)
@@ -265,7 +278,7 @@ Reply ONLY JSON: {"action":"continue|blocked|agree_review","summary":"work compl
 // RunRecurring executes at most one RIGHT/LEFT work cycle per poll tick until
 // the persisted deadline is reached or RIGHT asks to stop for owner input.
 func RunRecurring(ctx context.Context, s Streamer, o RecurringOptions) (Result, error) {
-	if strings.TrimSpace(o.Goal) == "" || o.LeftID == "" || o.RightID == "" || o.LeftID == o.RightID {
+	if currentGoal(o.Options) == "" || o.LeftID == "" || o.RightID == "" || o.LeftID == o.RightID {
 		return Result{}, errors.New("a goal and two distinct session IDs are required")
 	}
 	if o.PollEvery <= 0 {
@@ -308,11 +321,12 @@ func RunRecurring(ctx context.Context, s Streamer, o RecurringOptions) (Result, 
 		}
 
 		ownerNotes := drainInstructions(o.Instructions)
+		goal := currentGoal(o.Options)
 		rightPrompt := fmt.Sprintf(`You are RIGHT (decision/review). Goal: %s
 Owner instructions (highest task priority): %s
 Current evidence from LEFT: %s
 Decide the next concrete, testable work step. Use action=wait when no LEFT work is useful now but a future poll may observe a changed market/RPC/process condition; wait must include the current observation/evidence and what the next poll should re-check. Use blocked only when progress requires owner authorization, a secret/manual action, or another external condition this loop cannot independently resolve. If stuck on research, research on the web yourself using available browsing tools; use action=research when LEFT should perform external research. If you believe the goal is satisfied, action=propose_review. Never claim an online search unless you actually performed it.
-Reply ONLY JSON: {"action":"plan|research|wait|blocked|propose_review","summary":"current concise summary or observation","next":"specific instructions, next observation target, or unblock condition","evidence":"test evidence or caveats"}`, o.Goal, ownerNotes, previous)
+Reply ONLY JSON: {"action":"plan|research|wait|blocked|propose_review","summary":"current concise summary or observation","next":"specific instructions, next observation target, or unblock condition","evidence":"test evidence or caveats"}`, goal, ownerNotes, previous)
 		right, err := callWithRetry(ctx, s, o.RightID, rightPrompt, "right", round, o.Options)
 		if err != nil {
 			return result, fmt.Errorf("right round %d: %w", round, err)
@@ -344,6 +358,7 @@ Reply ONLY JSON: {"action":"plan|research|wait|blocked|propose_review","summary"
 		}
 
 		ownerNotes = strings.TrimSpace(ownerNotes + "\n" + drainInstructions(o.Instructions))
+		goal = currentGoal(o.Options)
 		leftPrompt := fmt.Sprintf(`You are LEFT (implementation/execution). Goal: %s
 Owner instructions (highest task priority): %s
 RIGHT's assessment: %s
@@ -351,7 +366,7 @@ RIGHT's action: %s
 RIGHT's requested next step: %s
 RIGHT's evidence: %s
 Execute or investigate using available tools, verify results, and report facts. If action is research, collect current online sources if browser/search tools are available; never invent citations. If RIGHT says blocked, independently check whether any actionable work remains; reply action=blocked if both sides must wait for an external condition, without repeating tests or making unnecessary requests. If action is propose_review, independently verify completion, and action=agree_review only if genuinely ready; otherwise action=continue.
-Reply ONLY JSON: {"action":"continue|blocked|agree_review","summary":"work completed and remaining issues","next":"what RIGHT should consider or unblock condition","evidence":"tests or URLs actually checked"}`, o.Goal, ownerNotes, right.Summary, right.Action, right.Next, right.Evidence)
+Reply ONLY JSON: {"action":"continue|blocked|agree_review","summary":"work completed and remaining issues","next":"what RIGHT should consider or unblock condition","evidence":"tests or URLs actually checked"}`, goal, ownerNotes, right.Summary, right.Action, right.Next, right.Evidence)
 		left, err := callWithRetry(ctx, s, o.LeftID, leftPrompt, "left", round, o.Options)
 		if err != nil {
 			return result, fmt.Errorf("left round %d: %w", round, err)

@@ -54,3 +54,16 @@ func TestAuxiliaryWorkspaceFunctionKeyPanels(t *testing.T) {
 		t.Fatal("F4 did not hide terminal workspace")
 	}
 }
+
+func TestAuxiliaryWorkspaceF2IncludesDuelGoal(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	root := t.TempDir()
+	aux := NewAuxiliaryWorkspace(root, NewTerminalService(root))
+	aux.SetGoalEditor("ship the feature", func(string) error { return nil })
+	aux.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	aux.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyF2}))
+	view, ok := aux.View()
+	if !ok || !strings.Contains(view.Content, "Duel goal") || !strings.Contains(view.Content, "ship the feature") {
+		t.Fatalf("F2 goal missing: %q", view.Content)
+	}
+}

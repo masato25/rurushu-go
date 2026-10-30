@@ -138,6 +138,34 @@ func TestDuelTUIShowsAutomaticRetryStatus(t *testing.T) {
 	}
 }
 
+func TestDuelTUIFirstInputInitializesGoalAndStarts(t *testing.T) {
+	runCalled := make(chan struct{}, 1)
+	ui := newDuelUI(make(chan string, 4), make(chan duelUpdate, 4), func() { runCalled <- struct{}{} }, func() {})
+	var goal string
+	ui.setInitialGoalHandler(func(value string) error {
+		goal = value
+		ui.leftID = "ses-left"
+		ui.rightID = "ses-right"
+		return nil
+	})
+	if cmd := ui.Init(); cmd == nil {
+		t.Fatal("waiting-for-goal TUI should still focus input")
+	}
+	ui.input.SetValue("build the next feature")
+	_, cmd := ui.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("initial goal did not arm duel update listener")
+	}
+	if goal != "build the next feature" || ui.waitingForGoal || ui.stopped {
+		t.Fatalf("goal=%q waiting=%v stopped=%v", goal, ui.waitingForGoal, ui.stopped)
+	}
+	select {
+	case <-runCalled:
+	case <-time.After(time.Second):
+		t.Fatal("duel did not start after initial goal")
+	}
+}
+
 func TestDuelTUIRoutesFunctionKeysToAuxiliaryWorkspace(t *testing.T) {
 	root := t.TempDir()
 	service := tui.NewTerminalService(root)

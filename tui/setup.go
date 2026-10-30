@@ -23,6 +23,7 @@ type SetupModel struct {
 	err      error
 	embedded bool
 	scroll   int
+	goalSave func(string) error
 }
 
 const (
@@ -59,6 +60,16 @@ func NewSetupModel(cfg rurushuconfig.Config) *SetupModel {
 	inputs[setupAPIKey].EchoCharacter = '•'
 	inputs[setupBaseURL].Focus()
 	return &SetupModel{inputs: inputs, config: cfg}
+}
+
+func (m *SetupModel) EnableGoalEditor(goal string, save func(string) error) {
+	input := textinput.New()
+	input.Prompt = ""
+	input.Placeholder = "Duel goal"
+	input.SetValue(strings.TrimSpace(goal))
+	input.SetWidth(72)
+	m.inputs = append(m.inputs, input)
+	m.goalSave = save
 }
 
 func (m *SetupModel) Init() tea.Cmd { return textinput.Blink }
@@ -155,6 +166,15 @@ func (m *SetupModel) save() error {
 		return err
 	}
 	m.path = path
+	if m.goalSave != nil {
+		goal := strings.TrimSpace(m.inputs[len(m.inputs)-1].Value())
+		if goal == "" {
+			return fmt.Errorf("duel goal is required")
+		}
+		if err := m.goalSave(goal); err != nil {
+			return err
+		}
+	}
 	m.err = nil
 	return nil
 }
@@ -175,6 +195,9 @@ func (m *SetupModel) View() tea.View {
 	}
 
 	labels := []string{"Base URL", "API key", "Model", "System prompt", "Max steps", "Max context tokens", "Compact at %"}
+	if len(m.inputs) > setupFieldCount {
+		labels = append(labels, "Duel goal")
+	}
 	var b strings.Builder
 	b.WriteString(statusNameStyle.Render("rurushu setup"))
 	b.WriteString("\n")

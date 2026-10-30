@@ -16,9 +16,14 @@ import (
 	"github.com/masato25/rurushu-go/projectstate"
 )
 
-func TestDuelRejectsMissingGoal(t *testing.T) {
-	if err := runDuel([]string{"--cwd", t.TempDir()}); err == nil {
-		t.Fatal("missing goal accepted")
+func TestResolveDuelStateRejectsMissingGoal(t *testing.T) {
+	store, err := projectstate.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = resolveDuelState(store, filepath.Join(store.Dir, "duel-state.json"), "", false, false)
+	if err == nil {
+		t.Fatal("missing goal accepted by state creator")
 	}
 }
 
