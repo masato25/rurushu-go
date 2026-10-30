@@ -87,6 +87,8 @@ type Model struct {
 	terminalService     *TerminalService
 	terminalVisible     bool
 	queuedInputs        []string
+	pastedContent       map[string]string
+	pasteCounter        int
 }
 
 type streamStartedMsg struct {
@@ -156,12 +158,13 @@ func NewWithStreamer(modelName, providerID string, llm Streamer) *Model {
 	vp.MouseWheelEnabled = true
 
 	m := &Model{
-		viewport:     vp,
-		composer:     composer,
-		modelName:    modelName,
-		provider:     providerID,
-		llm:          llm,
-		activityMode: ActivityNormal,
+		viewport:      vp,
+		composer:      composer,
+		modelName:     modelName,
+		provider:      providerID,
+		llm:           llm,
+		activityMode:  ActivityNormal,
+		pastedContent: make(map[string]string),
 	}
 	m.registerDefaultSlashCommands()
 	m.refreshConversation()
@@ -354,6 +357,25 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.layout()
 		return m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
 
+	case tea.PasteMsg:
+		text := strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(msg.Content, "\r\n", "\n"), "\r", "\n"))
+		if text == "" {
+			return m, nil
+		}
+		lineCount := strings.Count(text, "\n") + 1
+		if lineCount >= 3 || len(text) > 200 {
+			m.pasteCounter++
+			marker := fmt.Sprintf("[Pasted ~%d lines #%d]", lineCount, m.pasteCounter)
+			m.pastedContent[marker] = text
+			beforeHeight := m.composer.Height()
+			m.composer, _ = m.composer.Update(tea.PasteMsg{Content: marker + " "})
+			m.updateSlashAutocomplete()
+			if beforeHeight != m.composer.Height() {
+				m.layout()
+			}
+			return m, nil
+		}
+
 	case tea.KeyPressMsg:
 		key := msg.String()
 		if m.browser != nil {
@@ -487,6 +509,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "esc":
 			if m.composer.Value() != "" {
 				m.composer.Reset()
+				m.pastedContent = make(map[string]string)
 				m.updateSlashAutocomplete()
 				m.layout()
 				return m, nil
@@ -509,20 +532,22 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "enter":
 			if m.streaming {
-				value := strings.TrimSpace(m.composer.Value())
+				value := strings.TrimSpace(m.expandPastedContent(m.composer.Value()))
 				if value != "" {
 					m.queuedInputs = append(m.queuedInputs, value)
 					m.composer.Reset()
+					m.pastedContent = make(map[string]string)
 					m.updateSlashAutocomplete()
 					m.layout()
 				}
 				return m, nil
 			}
-			value := strings.TrimSpace(m.composer.Value())
+			value := strings.TrimSpace(m.expandPastedContent(m.composer.Value()))
 			if value == "" && len(m.pendingAttachments) == 0 {
 				return m, nil
 			}
 			m.composer.Reset()
+			m.pastedContent = make(map[string]string)
 			m.updateSlashAutocomplete()
 			if value != "" {
 				if shortcut, ok := slashFunctionKey(value); ok {
@@ -786,6 +811,7 @@ func (m *Model) refreshConversation() {
 			}
 		}
 	}
+
 	if picker := m.renderSelectionPicker(inner); picker != "" {
 		if b.Len() > 0 {
 			b.WriteString("\n\n")
@@ -804,6 +830,13 @@ func (m *Model) refreshConversation() {
 		b.WriteString(mutedStyle.Render(truncate(formatPendingAttachmentHint(m.pendingAttachments), inner)))
 	}
 	m.viewport.SetContent(b.String())
+}
+
+func (m *Model) expandPastedContent(input string) string {
+	for marker, content := range m.pastedContent {
+		input = strings.ReplaceAll(input, marker, content)
+	}
+	return input
 }
 
 func (m *Model) renderCachedMarkdown(index int, content string, width int) string {

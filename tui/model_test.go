@@ -136,6 +136,42 @@ func TestPlainEnterSubmitsAndShiftEnterDoesNot(t *testing.T) {
 	}
 }
 
+func TestLargePasteIsCollapsedInComposerButSubmittedInFull(t *testing.T) {
+	streamer := newControlledStreamer()
+	m := NewWithStreamer("gpt-test", "openai-compatible", streamer)
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	pasted := strings.Repeat("0123456789", 2500)
+	m.Update(tea.PasteMsg{Content: pasted})
+	if got := m.composer.Value(); !strings.Contains(got, "[Pasted ~1 lines #1]") {
+		t.Fatalf("large paste was not collapsed: %q", got)
+	}
+	if len(m.composer.Value()) >= len(pasted) {
+		t.Fatal("large paste was inserted directly into composer")
+	}
+
+	_, start := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	if start == nil || !m.streaming {
+		t.Fatal("large paste did not submit")
+	}
+	if len(m.history) != 1 || m.history[0].Content != pasted {
+		t.Fatalf("submitted paste length=%d want=%d", len(m.history[0].Content), len(pasted))
+	}
+}
+
+func TestMultilinePasteUsesCollapsedMarker(t *testing.T) {
+	m := New("test-model", "openai-compatible")
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	pasted := "alpha\nbeta\ngamma"
+	m.Update(tea.PasteMsg{Content: pasted})
+	if got := m.composer.Value(); !strings.Contains(got, "[Pasted ~3 lines #1]") {
+		t.Fatalf("multiline paste was not collapsed: %q", got)
+	}
+	if got := m.expandPastedContent(m.composer.Value()); !strings.Contains(got, pasted) {
+		t.Fatalf("paste did not expand back to original content: %q", got)
+	}
+}
+
 func TestComposerDynamicHeightIsBounded(t *testing.T) {
 	m := New("test-model", "openai-compatible")
 	m.Update(tea.WindowSizeMsg{Width: 36, Height: 20})
