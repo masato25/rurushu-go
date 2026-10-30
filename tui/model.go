@@ -568,6 +568,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	beforeHeight := m.composer.Height()
 	beforeValue := m.composer.Value()
+	beforeSlashUI := strings.HasPrefix(strings.TrimSpace(beforeValue), "/")
 	var composerCmd tea.Cmd
 	m.composer, composerCmd = m.composer.Update(msg)
 	if composerCmd != nil {
@@ -580,8 +581,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if beforeHeight != m.composer.Height() {
 		m.layout()
 	} else if valueChanged {
-		m.refreshConversation()
-		m.viewport.GotoBottom()
+		// The composer is rendered independently from the transcript. Rebuilding
+		// the entire viewport for every typed character makes long sessions
+		// progressively laggy because refreshConversation walks and rejoins all
+		// messages before calling viewport.SetContent. Only slash autocomplete is
+		// transcript-backed and needs a refresh while the composer value changes.
+		afterSlashUI := strings.HasPrefix(strings.TrimSpace(m.composer.Value()), "/")
+		if beforeSlashUI || afterSlashUI {
+			m.refreshConversation()
+			m.viewport.GotoBottom()
+		}
 	}
 
 	beforeOffset := m.viewport.YOffset()
