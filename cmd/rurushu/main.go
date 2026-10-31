@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -262,9 +263,11 @@ func rebuildAndReload(args []string, sessionID string) error {
 	if err := build.Run(); err != nil {
 		return fmt.Errorf("reload build failed (session retained, rerun with --resume %s): %w", sessionID, err)
 	}
-	command := exec.Command(filepath.Join(root, "bin", "rurushu"), reloadArgs(args, sessionID)...)
-	command.Stdin, command.Stdout, command.Stderr = os.Stdin, os.Stdout, os.Stderr
-	return command.Run()
+	// Replace the current process rather than nesting a new Rurushu child.
+	// A child with Run() leaves every previous reload waiting as a parent,
+	// accumulating idle processes and permitting concurrent session owners.
+	bin := filepath.Join(root, "bin", "rurushu")
+	return syscall.Exec(bin, append([]string{bin}, reloadArgs(args, sessionID)...), os.Environ())
 }
 
 func newPermissionHandler(autoApprove bool) (permission.Handler, <-chan *permission.Prompt) {

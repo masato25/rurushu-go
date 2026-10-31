@@ -40,9 +40,10 @@ type Streamer interface {
 }
 
 type Model struct {
-	reloadRequested bool
-	width           int
-	height          int
+	visibleHistoryLimit int
+	reloadRequested     bool
+	width               int
+	height              int
 
 	frame frameLayout
 
@@ -170,13 +171,14 @@ func NewWithStreamer(modelName, providerID string, llm Streamer) *Model {
 	vp.MouseWheelEnabled = true
 
 	m := &Model{
-		viewport:      vp,
-		composer:      composer,
-		modelName:     modelName,
-		provider:      providerID,
-		llm:           llm,
-		activityMode:  ActivityNormal,
-		pastedContent: make(map[string]string),
+		visibleHistoryLimit: 120,
+		viewport:            vp,
+		composer:            composer,
+		modelName:           modelName,
+		provider:            providerID,
+		llm:                 llm,
+		activityMode:        ActivityNormal,
+		pastedContent:       make(map[string]string),
 	}
 	m.registerDefaultSlashCommands()
 	m.refreshConversation()
@@ -557,13 +559,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cancelActiveStream()
 				return m, nil
 			}
-		case "pageup":
+		case "pageup", "pgup":
+			if m.viewport.AtTop() && m.visibleHistoryLimit < len(m.messages) {
+				m.visibleHistoryLimit += 120
+				m.refreshConversation()
+				m.viewport.GotoTop()
+			}
 			m.viewport.PageUp()
 			if m.streaming {
 				m.followStream = m.viewport.AtBottom()
 			}
 			return m, nil
-		case "pagedown":
+		case "pagedown", "pgdown":
 			m.viewport.PageDown()
 			if m.streaming {
 				m.followStream = m.viewport.AtBottom()
@@ -823,8 +830,14 @@ func (m *Model) refreshConversation() {
 		b.WriteString("\n")
 		b.WriteString(mutedStyle.Render("describe a change, ask a question, or start a task"))
 	} else {
-		for idx, message := range m.messages {
-			if idx > 0 {
+		start := 0
+		if m.visibleHistoryLimit > 0 && len(m.messages) > m.visibleHistoryLimit {
+			start = len(m.messages) - m.visibleHistoryLimit
+			fmt.Fprintf(&b, "  [Older messages hidden: %d · PageUp at top to load more]\n\n", start)
+		}
+		for idx := start; idx < len(m.messages); idx++ {
+			message := m.messages[idx]
+			if idx > start {
 				previous := m.messages[idx-1]
 				if message.Role == roleActivity || previous.Role == roleActivity {
 					b.WriteString("\n")

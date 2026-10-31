@@ -700,3 +700,18 @@ func TestCreateSessionManualFallbackIsAlreadySubmitted(t *testing.T) {
 		t.Fatalf("createSession = (%q, %t), want (new, true)", id, submitted)
 	}
 }
+
+func TestCOSAutoCompactAtTurnMilestones(t *testing.T) {
+	for _, tt := range []struct {
+		count    int
+		expected bool
+	}{{0, false}, {99, false}, {100, true}, {101, false}, {199, false}, {200, true}} {
+		messages := make([]Message, tt.count)
+		for i := range messages {
+			messages[i] = Message{Role: RoleUser, Content: "check"}
+		}
+		if got := shouldAutoCompactCOS(messages); got != tt.expected {
+			t.Fatalf("count=%d got=%t want=%t", tt.count, got, tt.expected)
+		}
+	}
+}

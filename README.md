@@ -195,6 +195,10 @@ Local slash commands are handled by the TUI before a prompt reaches the model. T
 
 When developing Rurushu from its source checkout, type `/reload` in an idle single-chat TUI to save the current session, exit the UI, run `build.sh --skip-tests`, and relaunch the rebuilt binary with `--resume <current-session-id>`. The selected provider and command-line settings are preserved; the session does not silently switch to the most recently used session. A failed build leaves the session saved and prints a manual resume command instead of launching a broken binary. Run tests separately before production use; reload deliberately skips tests for speed.
 
+On Unix systems the successful reload replaces the running Rurushu process in place, keeping its PID instead of nesting extra parent processes. Existing nested processes from older releases are not automatically terminated; close that legacy terminal chain once before validating subsequent reloads.
+
+For long sessions, the TUI renders only the most recent 120 transcript entries by default. When scrolled to the top, press PageUp to reveal 120 more entries; all history remains stored in the original session. COS additionally requests a native Compact & Resume handoff at every 100th user turn when an existing remote session mapping is available. Handoff is requested, not guaranteed complete immediately; the COS provider waits for ongoing handoffs before submitting subsequent input. Failed compact requests do not block a normal follow-up or create a new remote session. Local conversation history is retained for display and recovery.
+
 For long-running monitor/maintenance work, `/watch` keeps the normal single-chat workflow and periodically sends the configured instruction back into the same session. For example:
 
 ```text

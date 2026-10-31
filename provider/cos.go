@@ -156,6 +156,17 @@ func (p *COSProvider) Stream(ctx context.Context, req CompletionRequest) (<-chan
 	if err != nil {
 		return nil, err
 	}
+	// COS owns its remote conversation history. Request its native in-place
+	// handoff at coarse, deterministic milestones rather than attempting to
+	// compact local messages or creating a replacement remote session.
+	// Failures are nonfatal: a follow-up must never be lost to maintenance.
+	if shouldAutoCompactCOS(req.Messages) && p.storedSession(req.SessionID) != "" {
+		compactCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		if err := p.CompactResume(compactCtx, req.SessionID); err != nil {
+			p.logf("COS auto compact skipped: %v\n", err)
+		}
+		cancel()
+	}
 	prompt := formatCOSPrompt(req, p.CWD)
 	sessionID, alreadySubmitted, err := p.resolveSession(ctx, baseURL, token, req.SessionID, prompt)
 	if err != nil {
@@ -165,6 +176,16 @@ func (p *COSProvider) Stream(ctx context.Context, req CompletionRequest) (<-chan
 	out := make(chan StreamEvent)
 	go p.runStreamSelected(ctx, out, baseURL, token, sessionID, prompt, alreadySubmitted, req.Model, req.ReasoningEffort)
 	return out, nil
+}
+
+func shouldAutoCompactCOS(messages []Message) bool {
+	turns := 0
+	for _, message := range messages {
+		if message.Role == RoleUser {
+			turns++
+		}
+	}
+	return turns >= 100 && turns%100 == 0
 }
 
 func (p *COSProvider) runStream(ctx context.Context, out chan<- StreamEvent, baseURL, token, sessionID, prompt string, alreadySubmitted bool) {

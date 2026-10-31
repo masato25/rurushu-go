@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -787,5 +788,23 @@ func TestSequentialResizesPreserveExactTerminalGeometry(t *testing.T) {
 				t.Fatalf("resize %dx%d cursor escaped window: x=%d y=%d", size.Width, size.Height, view.Cursor.X, view.Cursor.Y)
 			}
 		}
+	}
+}
+
+func TestTranscriptWindowRetainsHistoryAndExpands(t *testing.T) {
+	m := New("test", "cos")
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	for i := 0; i < 250; i++ {
+		m.messages = append(m.messages, Message{Role: roleUser, Content: fmt.Sprintf("entry-%03d", i)})
+	}
+	m.refreshConversation()
+	got := ansi.Strip(m.viewport.View())
+	if !strings.Contains(got, "Older messages hidden: 130") {
+		t.Fatalf("window marker missing: %q", got)
+	}
+	m.viewport.GotoTop()
+	m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyPgUp}))
+	if m.visibleHistoryLimit != 240 || len(m.messages) != 250 {
+		t.Fatalf("pagination mutated history: limit=%d len=%d", m.visibleHistoryLimit, len(m.messages))
 	}
 }
