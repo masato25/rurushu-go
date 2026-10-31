@@ -1,6 +1,7 @@
 package projectstate
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -110,6 +111,109 @@ func TestSessionHistoryRoundTripAndFork(t *testing.T) {
 	}
 	if len(all) != 2 {
 		t.Fatalf("sessions=%d", len(all))
+	}
+}
+
+func TestSaveCurrentSessionDoesNotRewriteProjectState(t *testing.T) {
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := store.StartSession("model", "cos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(store.Dir, "state.json")
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.SaveSession(session.ID, "model", "cos", []provider.Message{{Role: provider.RoleUser, Content: "hello"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(before, after) {
+		t.Fatal("state.json was unnecessarily replaced")
+	}
+	loaded, err := store.LoadSession(session.ID)
+	if err != nil || len(loaded.Messages) != 1 {
+		t.Fatalf("session not saved: %+v %v", loaded, err)
+	}
+}
+
+func TestSessionJournalAppendRestartAndSnapshotReset(t *testing.T) {
+	root := t.TempDir()
+	store, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := store.StartSession("model", "cos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := store.sessionPath(session.ID)
+	before, err := os.ReadFile(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	history := []provider.Message{{Role: provider.RoleUser, Content: "one"}}
+	if _, err := store.SaveSession(session.ID, "model", "cos", history); err != nil {
+		t.Fatal(err)
+	}
+	history = append(history, provider.Message{Role: provider.RoleAssistant, Content: "two"})
+	if _, err := store.SaveSession(session.ID, "model", "cos", history); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("append-only save changed the snapshot")
+	}
+	store, err = Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := store.LoadSession(session.ID)
+	if err != nil || !reflect.DeepEqual(loaded.Messages, history) {
+		t.Fatalf("journal recovery got=%+v err=%v", loaded.Messages, err)
+	}
+	// A truncated tail is ignored; the next append removes it.
+	f, err := os.OpenFile(store.deltaPath(session.ID), os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = f.WriteString(`{"base_hash":"partial`)
+	_ = f.Close()
+	loaded, err = store.LoadSession(session.ID)
+	if err != nil || len(loaded.Messages) != 2 {
+		t.Fatalf("partial tail recovery: %v %+v", err, loaded.Messages)
+	}
+	history = append(history, provider.Message{Role: provider.RoleUser, Content: "three"})
+	if _, err = store.SaveSession(session.ID, "model", "cos", history); err != nil {
+		t.Fatal(err)
+	}
+	// Rewriting prior content must replace the snapshot, and old journal is stale.
+	history[0].Content = "revised"
+	if _, err = store.SaveSession(session.ID, "model", "cos", history); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err = store.LoadSession(session.ID)
+	if err != nil || !reflect.DeepEqual(loaded.Messages, history) {
+		t.Fatalf("snapshot reset got=%+v err=%v", loaded.Messages, err)
+	}
+	history = append(history, provider.Message{Role: provider.RoleAssistant, Content: "four"})
+	if _, err = store.SaveSession(session.ID, "model", "cos", history); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err = store.LastSession()
+	if err != nil || !reflect.DeepEqual(loaded.Messages, history) {
+		t.Fatalf("after snapshot reset got=%+v err=%v", loaded.Messages, err)
 	}
 }
 
