@@ -110,7 +110,7 @@ func (c *Client) streamWithTools(ctx context.Context, initial provider.Completio
 					repeatedCallCount = 1
 				}
 
-				output, isError := c.executeTool(ctx, call)
+				output, isError := c.executeTool(ctx, call, initial.SessionID)
 				if repeatedCallCount >= 3 {
 					output += "\n\n[Harness note: this identical tool call has been repeated multiple times. Use the result already gathered and move toward answering the user.]"
 					forceFinalize = true
@@ -223,7 +223,7 @@ func toolCallFingerprint(call provider.ToolCall) string {
 	return call.Function.Name + "\x00" + args
 }
 
-func (c *Client) executeTool(ctx context.Context, call provider.ToolCall) (string, bool) {
+func (c *Client) executeTool(ctx context.Context, call provider.ToolCall, sessionID string) (string, bool) {
 	t, ok := c.tools.Get(call.Function.Name)
 	if !ok {
 		return fmt.Sprintf("tool %q is not registered", call.Function.Name), true
@@ -233,6 +233,7 @@ func (c *Client) executeTool(ctx context.Context, call provider.ToolCall) (strin
 		args = "{}"
 	}
 	execCtx := &tool.ExecutionContext{CWD: c.cwd}
+	execCtx.Metadata = map[string]string{"session_id": sessionID}
 	if c.permission != nil {
 		execCtx.AskPermission = func(req permission.Request) bool {
 			approved, err := c.permission.Ask(ctx, req)

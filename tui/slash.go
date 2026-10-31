@@ -25,6 +25,7 @@ type SlashCommandResult struct {
 	ClearSession bool
 	Quit         bool
 	picker       *selectionPicker
+	cmd          tea.Cmd
 }
 
 func normalizeSlashName(name string) string {
@@ -55,6 +56,7 @@ func (m *Model) RegisterSlashCommand(command SlashCommand) error {
 
 func (m *Model) registerDefaultSlashCommands() {
 	m.registerAttachmentSlashCommands()
+	m.registerWatchSlashCommand()
 	for _, shortcut := range []struct {
 		name, description string
 	}{
@@ -340,7 +342,7 @@ func (m *Model) runSlashCommand(input string) (bool, tea.Cmd) {
 	if output != "" {
 		m.messages = append(m.messages, Message{Role: roleAssistant, Content: output, Local: true})
 	}
-	return true, nil
+	return true, result.cmd
 }
 
 func (m *Model) updateSlashAutocomplete() {

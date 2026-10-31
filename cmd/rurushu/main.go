@@ -187,6 +187,9 @@ func run(args []string) error {
 	registry := tool.NewRegistry()
 	builtin.RegisterReadOnly(registry)
 	builtin.RegisterExecution(registry, jobManager)
+	for _, mode := range []string{"create", "status", "stop"} {
+		registry.Register(&watchTool{stateDir: projectStore.Dir, mode: mode})
+	}
 	terminalService := tui.NewTerminalService(absCWD)
 	defer terminalService.Close()
 	registry.Register(&terminalSendTool{service: terminalService})

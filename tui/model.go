@@ -89,6 +89,7 @@ type Model struct {
 	queuedInputs        []string
 	pastedContent       map[string]string
 	pasteCounter        int
+	watch               watchSchedule
 }
 
 type streamStartedMsg struct {
@@ -105,6 +106,12 @@ type streamEventMsg struct {
 }
 
 type queuedSubmitMsg struct{}
+
+type watchTickMsg struct {
+	generation uint64
+}
+
+type watchSyncMsg struct{}
 
 type permissionPromptMsg struct {
 	prompt *permission.Prompt
@@ -209,6 +216,12 @@ func (m *Model) SetActivityMode(mode ActivityMode) {
 
 func (m *Model) Init() tea.Cmd {
 	cmds := []tea.Cmd{m.composer.Focus(), progressTick()}
+	if m.sessionStore != nil {
+		cmds = append(cmds, watchSyncCmd())
+	}
+	if cmd := m.watchTimerCmd(); cmd != nil {
+		cmds = append(cmds, cmd)
+	}
 	if m.permissionRequests != nil {
 		cmds = append(cmds, waitForPermission(m.permissionRequests))
 	}
@@ -357,6 +370,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.layout()
 		return m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
 
+	case watchTickMsg:
+		return m.handleWatchTick(msg)
+	case watchSyncMsg:
+		cmd := m.syncWatchSchedule()
+		return m, tea.Batch(cmd, watchSyncCmd())
+
 	case tea.PasteMsg:
 		text := strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(msg.Content, "\r\n", "\n"), "\r", "\n"))
 		if text == "" {
@@ -431,7 +450,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch key {
 			case "esc", "f2":
 				m.setup = nil
-				return m, nil
+				return m, m.watchTimerCmd()
 			case "ctrl+c":
 				return m, tea.Quit
 			}
@@ -452,6 +471,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.setup = NewSetupModel(cfg)
 			m.setup.embedded = true
+			if m.sessionStore != nil {
+				_ = m.syncWatchSchedule()
+				m.setup.EnableWatchEditor(m.watch.Active, m.watch.Interval, m.watch.Prompt, m.watch.NextRunAt, m.watch.LastRunAt, m.updateWatchFromSetup)
+			}
 			m.setup.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
 			return m, m.setup.Init()
 		}
@@ -904,6 +927,9 @@ func (m *Model) statusView() string {
 	}
 	if m.runningJobs > 0 {
 		state += "  " + jobCountLabel(m.runningJobs)
+	}
+	if m.watch.Active {
+		state += "  watch " + m.watch.Interval
 	}
 	if len(m.pendingAttachments) > 0 {
 		if len(m.pendingAttachments) == 1 {

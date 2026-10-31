@@ -189,7 +189,20 @@ Local slash commands are handled by the TUI before a prompt reaches the model. T
 /detach [index|all]  remove a queued image attachment
 /jobs [id]  list managed jobs or inspect one job's recent output
 /stop <id>  stop a Rurushu-managed background job
+/watch [<interval> <instruction>|stop]  run a recurring instruction in this single chat session
 ```
+
+For long-running monitor/maintenance work, `/watch` keeps the normal single-chat workflow and periodically sends the configured instruction back into the same session. For example:
+
+```text
+/watch 10m inspect the current monitor and process health; summarize changes since the previous check; investigate anomalies; apply safe fixes or restarts when justified; otherwise report that no action is needed
+```
+
+Use `/watch` with no arguments to inspect the schedule and `/watch stop` to disable it. The schedule is stored per session under `.rurushu/` and is restored when that session is resumed. A tick is deliberately skipped when a model/tool run is still active, a permission prompt is waiting, another TUI workspace is open, or the composer contains an unsent draft; recurring work never overwrites user input or accumulates a backlog. The TUI process must remain running for timers to fire. If scheduled work needs permission-gated execution without a person present, the existing `--auto-approve` mode can be used for a trusted workspace; otherwise Rurushu pauses at the normal permission prompt.
+
+The interactive harness also exposes `watch_create`, `watch_status`, and `watch_stop` tools to models supporting tool calling. Therefore a natural-language request such as "Schedule a check of my system every 10 minutes; diagnose anomalies and repair issues when safe" can create the same recurring watch without memorizing `/watch` syntax. The result is applied to the currently active session by the TUI, usually within two seconds. Successful tool execution confirms schedule creation, not successful future checks or repairs. Commands that alter the system continue to use normal permissions, and an open TUI is still required.
+
+To manage the current session's schedule visually, open **F2 Setup**, then press **Ctrl+W** to switch to **Scheduled tasks**. The panel shows whether the watch is running, its next and last run, interval, and instruction. Edit the interval and instruction, then press **Enter** on the instruction field to save and activate the schedule. Press **Ctrl+D** in this panel to stop it immediately. **Ctrl+W** returns to normal settings, and **Esc/F2** closes Setup. These changes persist to the same session watch file and are independent of the regular model configuration Save button.
 
 Unknown slash commands stay local and show an error. Prefix a prompt with `//` when you really want to send leading-slash text to the model; for example, `//help` sends `/help` as a normal prompt.
 

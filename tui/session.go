@@ -16,6 +16,7 @@ func (m *Model) SetProjectSession(store *projectstate.Store, session projectstat
 	m.sessionSaveError = ""
 	m.restoreHistory(session.Messages)
 	m.registerSessionSlashCommands()
+	m.loadWatchSchedule()
 }
 
 func (m *Model) SessionID() string { return m.sessionID }
@@ -45,7 +46,10 @@ func (m *Model) registerSessionSlashCommands() {
 				return m.sessionPicker()
 			}
 			output, err := m.resumeSession(id)
-			return SlashCommandResult{Output: output}, err
+			if err != nil {
+				return SlashCommandResult{}, err
+			}
+			return SlashCommandResult{Output: output, cmd: m.watchTimerCmd()}, nil
 		},
 	})
 	_ = m.RegisterSlashCommand(SlashCommand{
@@ -61,7 +65,7 @@ func (m *Model) registerSessionSlashCommands() {
 				return SlashCommandResult{}, err
 			}
 			m.restoreSession(session)
-			return SlashCommandResult{Output: "started " + session.ID}, nil
+			return SlashCommandResult{Output: "started " + session.ID, cmd: m.watchTimerCmd()}, nil
 		},
 	})
 	_ = m.RegisterSlashCommand(SlashCommand{
@@ -173,6 +177,7 @@ func (m *Model) restoreSession(session projectstate.Session) {
 	m.sessionSaveError = ""
 	m.pendingAttachments = nil
 	m.restoreHistory(session.Messages)
+	m.loadWatchSchedule()
 	m.composer.Reset()
 	m.updateSlashAutocomplete()
 	m.refreshConversation()

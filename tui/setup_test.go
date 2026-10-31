@@ -4,6 +4,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	rurushuconfig "github.com/masato25/rurushu-go/config"
@@ -22,6 +23,53 @@ func TestSetupScreenClipsToTerminalAndEnablesMouse(t *testing.T) {
 	m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelDown})
 	if m.scroll == 0 {
 		t.Fatal("mouse wheel did not scroll setup")
+	}
+}
+
+func TestSetupWatchEditorCanStartEditAndStop(t *testing.T) {
+	m := NewSetupModel(rurushuconfig.Defaults())
+	var active bool
+	var interval, prompt string
+	m.EnableWatchEditor(false, "10m", "check system", time.Time{}, time.Time{}, func(a bool, i, p string) error {
+		active, interval, prompt = a, i, p
+		return nil
+	})
+	m.Update(tea.KeyPressMsg(tea.Key{Code: 'w', Mod: tea.ModCtrl}))
+	if !m.watchTab || !strings.Contains(m.View().Content, "Scheduled tasks") {
+		t.Fatal("F2 watch panel missing")
+	}
+	m.watchEditor.interval.SetValue("5m")
+	m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	m.watchEditor.prompt.SetValue("check and repair")
+	m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	if !active || interval != "5m" || prompt != "check and repair" {
+		t.Fatalf("save failed: %v %q %q", active, interval, prompt)
+	}
+	m.Update(tea.KeyPressMsg(tea.Key{Code: 'd', Mod: tea.ModCtrl}))
+	if active || m.watchEditor.active {
+		t.Fatal("stop did not disable watch")
+	}
+}
+
+func TestF2WatchChangesPersistInSingleChat(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	m := newWatchTestModel(t)
+	m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyF2}))
+	if m.setup == nil || m.setup.watchEditor == nil {
+		t.Fatal("watch editor not mounted")
+	}
+	m.setup.Update(tea.KeyPressMsg(tea.Key{Code: 'w', Mod: tea.ModCtrl}))
+	m.setup.watchEditor.interval.SetValue("10m")
+	m.setup.watchEditor.prompt.SetValue("check arbitrage services")
+	if err := m.setup.saveWatch(); err != nil {
+		t.Fatal(err)
+	}
+	if !m.watch.Active || m.watch.Prompt != "check arbitrage services" {
+		t.Fatalf("watch=%+v", m.watch)
+	}
+	m.setup.Update(tea.KeyPressMsg(tea.Key{Code: 'd', Mod: tea.ModCtrl}))
+	if m.watch.Active {
+		t.Fatal("watch not stopped")
 	}
 }
 
