@@ -5,6 +5,9 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -86,6 +89,7 @@ func run(args []string) error {
 	autoApprove := fs.Bool("auto-approve", saved.AutoApprove, "automatically approve all tool operations (unsafe; trusted tasks only)")
 	resumeSession := fs.String("resume", "", "resume project session by id or 'last'")
 	continueLast := fs.Bool("c", false, "continue the last project session (same as --resume last)")
+	pprofAddr := fs.String("pprof", "", "enable local Go profiling on 127.0.0.1:PORT (development only)")
 	var promptFiles stringList
 	fs.Var(&promptFiles, "prompt-file", "append a prompt file; repeatable")
 
@@ -97,6 +101,11 @@ func run(args []string) error {
 	}
 	if *continueLast && strings.TrimSpace(*resumeSession) != "" {
 		return errors.New("-c cannot be combined with --resume")
+	}
+	if *pprofAddr != "" {
+		if err := startLocalPprof(*pprofAddr); err != nil {
+			return err
+		}
 	}
 	if *maxSteps <= 0 || *maxContext <= 0 || *compactAt < 0 || *compactAt > 100 {
 		return errors.New("max-steps/max-context-tokens must be positive and compact-at must be between 0 and 100")
@@ -225,6 +234,19 @@ func run(args []string) error {
 	if uiModel.ReloadRequested() {
 		return rebuildAndReload(args, uiModel.SessionID())
 	}
+	return nil
+}
+
+func startLocalPprof(address string) error {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil || (host != "127.0.0.1" && host != "localhost" && host != "[::1]" && host != "::1") {
+		return fmt.Errorf("pprof address must be a loopback host and port (example: 127.0.0.1:6060)")
+	}
+	listener, err := net.Listen("tcp", address)
+	if err != nil {
+		return fmt.Errorf("start local pprof: %w", err)
+	}
+	go func() { _ = http.Serve(listener, http.DefaultServeMux) }()
 	return nil
 }
 

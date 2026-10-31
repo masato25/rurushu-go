@@ -40,10 +40,12 @@ type Streamer interface {
 }
 
 type Model struct {
-	visibleHistoryLimit int
-	reloadRequested     bool
-	width               int
-	height              int
+	visibleHistoryLimit  int
+	lastTranscriptRender time.Time
+	transcriptDirty      bool
+	reloadRequested      bool
+	width                int
+	height               int
 
 	frame frameLayout
 
@@ -94,6 +96,8 @@ type Model struct {
 	watch               watchSchedule
 	watchQueued         bool
 	watchRunPending     bool
+	watchFileModTime    time.Time
+	watchFileSize       int64
 }
 
 func (m *Model) ReloadRequested() bool { return m.reloadRequested }
@@ -127,6 +131,8 @@ type permissionPromptMsg struct {
 type jobRefreshMsg struct{ running int }
 
 type progressTickMsg struct{}
+
+const streamRenderInterval = 100 * time.Millisecond
 
 var progressFrames = []string{"◐", "◓", "◑", "◒"}
 
@@ -291,6 +297,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case progressTickMsg:
+		if m.transcriptDirty {
+			m.flushTranscript()
+		}
 		if m.streaming {
 			m.progressFrame = (m.progressFrame + 1) % len(progressFrames)
 			// The status line animates independently; rebuilding the whole
@@ -357,7 +366,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		follow := m.followStream
 		offset := m.viewport.YOffset()
 		done := m.applyStreamEvent(msg.event)
-		m.refreshConversation()
+		if done || msg.event.Type == provider.EventError || msg.event.Type == provider.EventToolStart || msg.event.Type == provider.EventToolResult || time.Since(m.lastTranscriptRender) >= streamRenderInterval {
+			m.refreshConversation()
+			m.lastTranscriptRender = time.Now()
+			m.transcriptDirty = false
+		} else {
+			m.transcriptDirty = true
+		}
 		if follow {
 			m.viewport.GotoBottom()
 		} else {
@@ -884,6 +899,22 @@ func (m *Model) refreshConversation() {
 	m.viewport.SetContent(b.String())
 }
 
+func (m *Model) flushTranscript() {
+	if !m.transcriptDirty {
+		return
+	}
+	follow := m.followStream
+	offset := m.viewport.YOffset()
+	m.refreshConversation()
+	m.lastTranscriptRender = time.Now()
+	m.transcriptDirty = false
+	if follow {
+		m.viewport.GotoBottom()
+	} else {
+		m.viewport.SetYOffset(min(offset, max(0, m.viewport.TotalLineCount()-m.viewport.VisibleLineCount())))
+	}
+}
+
 func (m *Model) expandPastedContent(input string) string {
 	for marker, content := range m.pastedContent {
 		input = strings.ReplaceAll(input, marker, content)
@@ -898,6 +929,9 @@ func (m *Model) renderCachedMarkdown(index int, content string, width int) strin
 	rendered := renderMarkdown(content, width)
 	if m.markdownCache == nil {
 		m.markdownCache = make(map[int]markdownCacheEntry)
+	}
+	if len(m.markdownCache) >= 128 {
+		clear(m.markdownCache)
 	}
 	m.markdownCache[index] = markdownCacheEntry{source: content, width: width, rendered: rendered}
 	return rendered

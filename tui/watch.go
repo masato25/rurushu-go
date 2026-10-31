@@ -137,6 +137,13 @@ func (m *Model) syncWatchSchedule() tea.Cmd {
 	if path == "" {
 		return nil
 	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil
+	}
+	if info.ModTime().Equal(m.watchFileModTime) && info.Size() == m.watchFileSize {
+		return nil
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil
@@ -145,6 +152,7 @@ func (m *Model) syncWatchSchedule() tea.Cmd {
 	if err := json.Unmarshal(data, &saved); err != nil || saved.Version != watchVersion {
 		return nil
 	}
+	m.watchFileModTime, m.watchFileSize = info.ModTime(), info.Size()
 	if saved.Active == m.watch.Active && saved.Interval == m.watch.Interval && saved.Prompt == m.watch.Prompt && saved.NextRunAt.Equal(m.watch.NextRunAt) && saved.LastRunAt.Equal(m.watch.LastRunAt) && saved.RunStatus == m.watch.RunStatus && saved.CompletedAt.Equal(m.watch.CompletedAt) && saved.RunError == m.watch.RunError && saved.SkippedCount == m.watch.SkippedCount {
 		return nil
 	}
@@ -201,6 +209,8 @@ func (m *Model) watchPath() string {
 
 func (m *Model) loadWatchSchedule() {
 	m.watch.generation++
+	m.watchFileModTime = time.Time{}
+	m.watchFileSize = 0
 	path := m.watchPath()
 	if path == "" {
 		m.watch.Active = false
@@ -270,6 +280,9 @@ func (m *Model) persistWatchSchedule() error {
 	}
 	if err := os.Rename(tmpName, path); err != nil {
 		return fmt.Errorf("save recurring watch: %w", err)
+	}
+	if info, err := os.Stat(path); err == nil {
+		m.watchFileModTime, m.watchFileSize = info.ModTime(), info.Size()
 	}
 	return nil
 }

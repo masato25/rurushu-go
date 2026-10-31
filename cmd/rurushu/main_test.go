@@ -116,3 +116,11 @@ func TestReloadArgsPreservesSessionAndProvider(t *testing.T) {
 		t.Fatalf("reload args = %q, want %q", got, want)
 	}
 }
+
+func TestPprofRejectsNonLoopback(t *testing.T) {
+	for _, address := range []string{"0.0.0.0:6060", ":6060", "example.com:6060", "not-an-address"} {
+		if err := startLocalPprof(address); err == nil {
+			t.Fatalf("accepted unsafe address: %s", address)
+		}
+	}
+}

@@ -204,6 +204,7 @@ func (m *Model) restoreSession(session projectstate.Session) {
 }
 
 func (m *Model) restoreHistory(history []provider.Message) {
+	m.markdownCache = nil
 	m.history = cloneProviderMessages(history)
 	m.messages = transcriptFromHistory(m.history)
 	m.streamAssistantText = ""

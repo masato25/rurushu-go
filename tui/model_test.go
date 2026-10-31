@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -806,5 +807,36 @@ func TestTranscriptWindowRetainsHistoryAndExpands(t *testing.T) {
 	m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyPgUp}))
 	if m.visibleHistoryLimit != 240 || len(m.messages) != 250 {
 		t.Fatalf("pagination mutated history: limit=%d len=%d", m.visibleHistoryLimit, len(m.messages))
+	}
+}
+
+func TestStreamRenderThrottleAndCacheLimit(t *testing.T) {
+	m := New("test", "cos")
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.streaming = true
+	m.activeStream = 9
+	m.messages = []Message{{Role: roleAssistant, Content: "initial"}}
+	m.refreshConversation()
+	m.lastTranscriptRender = time.Now()
+	m.Update(streamEventMsg{id: 9, ok: true, event: provider.StreamEvent{Type: provider.EventToken, Text: " later"}})
+	if !m.transcriptDirty {
+		t.Fatal("token should be buffered for rendering")
+	}
+	if strings.Contains(ansi.Strip(m.viewport.View()), "later") {
+		t.Fatal("token rendered before throttle deadline")
+	}
+	m.Update(progressTickMsg{})
+	if m.transcriptDirty || !strings.Contains(ansi.Strip(m.viewport.View()), "later") {
+		t.Fatal("buffered token not flushed")
+	}
+	for i := 0; i < 300; i++ {
+		m.renderCachedMarkdown(i, "hello", 40)
+	}
+	if len(m.markdownCache) > 128 {
+		t.Fatalf("cache unbounded: %d", len(m.markdownCache))
+	}
+	m.restoreHistory(nil)
+	if len(m.markdownCache) != 0 {
+		t.Fatal("cache survived session history restore")
 	}
 }

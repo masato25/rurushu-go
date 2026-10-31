@@ -234,10 +234,16 @@ func (s *Store) SaveSession(id, model, providerID string, messages []provider.Me
 	session.Model = strings.TrimSpace(model)
 	session.Provider = strings.TrimSpace(providerID)
 	session.Messages = clonePersistedMessages(messages)
-	if err := validateSessionSize(session); err != nil {
-		return Session{}, err
+	// Encode once: the previous validation marshalled the entire history,
+	// followed by a second full marshal for writing it to disk.
+	data, err := json.MarshalIndent(session, "", "  ")
+	if err != nil {
+		return Session{}, fmt.Errorf("encode session %s: %w", id, err)
 	}
-	if err := writeJSONAtomic(s.sessionPath(id), session); err != nil {
+	if int64(len(data)+1) > maxSessionBytes {
+		return Session{}, fmt.Errorf("session %s exceeds %d bytes", id, maxSessionBytes)
+	}
+	if err := writeBytesAtomic(s.sessionPath(id), append(data, '\n')); err != nil {
 		return Session{}, err
 	}
 	if err := s.setLastSession(id); err != nil {
@@ -386,6 +392,10 @@ func writeJSONAtomic(path string, value any) error {
 		return fmt.Errorf("encode %s: %w", filepath.Base(path), err)
 	}
 	data = append(data, '\n')
+	return writeBytesAtomic(path, data)
+}
+
+func writeBytesAtomic(path string, data []byte) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".rurushu-*.tmp")
 	if err != nil {
 		return fmt.Errorf("create temp state: %w", err)
