@@ -30,13 +30,17 @@ type SetupModel struct {
 }
 
 type setupWatchEditor struct {
-	interval textinput.Model
-	prompt   textinput.Model
-	focus    int
-	active   bool
-	next     time.Time
-	last     time.Time
-	save     func(bool, string, string) error
+	interval     textinput.Model
+	prompt       textinput.Model
+	focus        int
+	active       bool
+	next         time.Time
+	last         time.Time
+	runStatus    string
+	completedAt  time.Time
+	skippedCount int
+	runError     string
+	save         func(bool, string, string) error
 }
 
 const (
@@ -95,6 +99,16 @@ func (m *SetupModel) EnableWatchEditor(active bool, interval, prompt string, nex
 	b.Placeholder = "Instructions for each scheduled run"
 	b.SetValue(prompt)
 	m.watchEditor = &setupWatchEditor{interval: a, prompt: b, active: active, next: next, last: last, save: save}
+}
+
+func (m *SetupModel) SetWatchRunStatus(status string, completed time.Time, skipped int, runError string) {
+	if m.watchEditor == nil {
+		return
+	}
+	m.watchEditor.runStatus = status
+	m.watchEditor.completedAt = completed
+	m.watchEditor.skippedCount = skipped
+	m.watchEditor.runError = runError
 }
 
 func (m *SetupModel) toggleWatchTab() tea.Cmd {
@@ -383,6 +397,18 @@ func (m *SetupModel) watchView() tea.View {
 	}
 	if !w.last.IsZero() {
 		b.WriteString("\nLast run: " + w.last.Format(time.RFC3339))
+	}
+	if w.runStatus != "" {
+		b.WriteString("\nLast result: " + w.runStatus)
+	}
+	if !w.completedAt.IsZero() {
+		b.WriteString("\nLast completion: " + w.completedAt.Format(time.RFC3339))
+	}
+	if w.skippedCount > 0 {
+		b.WriteString(fmt.Sprintf("\nSkipped ticks: %d", w.skippedCount))
+	}
+	if w.runError != "" {
+		b.WriteString("\nLast error: " + w.runError)
 	}
 	b.WriteString("\n\n")
 	for i, field := range []struct {

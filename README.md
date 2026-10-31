@@ -204,6 +204,8 @@ The interactive harness also exposes `watch_create`, `watch_status`, and `watch_
 
 To manage the current session's schedule visually, open **F2 Setup**, then press **Ctrl+W** to switch to **Scheduled tasks**. The panel shows whether the watch is running, its next and last run, interval, and instruction. Edit the interval and instruction, then press **Enter** on the instruction field to save and activate the schedule. Press **Ctrl+D** in this panel to stop it immediately. **Ctrl+W** returns to normal settings, and **Esc/F2** closes Setup. These changes persist to the same session watch file and are independent of the regular model configuration Save button.
 
+Watch execution tracking records `queued`, `running`, `completed`, `failed`, `skipped`, and `interrupted` in the per-session schedule file. F2 shows the latest result, last completion time, skipped tick count, and any execution error. `last_run_at` indicates when a run was queued, not a successful completion. A watch still in progress at process startup is marked interrupted. A `completed` status means the model stream finished normally, not that the monitored system is healthy or a repair succeeded; validate those claims from tool output and logs.
+
 Unknown slash commands stay local and show an error. Prefix a prompt with `//` when you really want to send leading-slash text to the model; for example, `//help` sends `/help` as a normal prompt.
 
 Slash commands autocomplete as you type. Enter `/` or a prefix such as `/he`, use `↑/↓` to choose a match, then press `Tab` or `Enter` to complete it. Press `Enter` again when the command is complete to run it. Commands registered by embedding applications automatically appear in the same autocomplete list.

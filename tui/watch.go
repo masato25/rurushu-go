@@ -14,13 +14,30 @@ import (
 const watchVersion = 1
 
 type watchSchedule struct {
-	Version    int       `json:"version"`
-	Active     bool      `json:"active"`
-	Interval   string    `json:"interval"`
-	Prompt     string    `json:"prompt"`
-	NextRunAt  time.Time `json:"next_run_at"`
-	LastRunAt  time.Time `json:"last_run_at,omitempty"`
-	generation uint64
+	Version      int       `json:"version"`
+	Active       bool      `json:"active"`
+	Interval     string    `json:"interval"`
+	Prompt       string    `json:"prompt"`
+	NextRunAt    time.Time `json:"next_run_at"`
+	LastRunAt    time.Time `json:"last_run_at,omitempty"`
+	RunStatus    string    `json:"run_status,omitempty"`
+	CompletedAt  time.Time `json:"completed_at,omitempty"`
+	RunError     string    `json:"run_error,omitempty"`
+	SkippedCount int       `json:"skipped_count,omitempty"`
+	generation   uint64
+}
+
+func (m *Model) watchRunStatus(status, detail string) {
+	if !m.watchRunPending {
+		return
+	}
+	m.watchRunPending = false
+	m.watch.RunStatus = status
+	m.watch.RunError = detail
+	m.watch.CompletedAt = time.Now()
+	if err := m.persistWatchSchedule(); err != nil {
+		m.sessionSaveError = err.Error()
+	}
 }
 
 func (m *Model) registerWatchSlashCommand() {
@@ -128,7 +145,7 @@ func (m *Model) syncWatchSchedule() tea.Cmd {
 	if err := json.Unmarshal(data, &saved); err != nil || saved.Version != watchVersion {
 		return nil
 	}
-	if saved.Active == m.watch.Active && saved.Interval == m.watch.Interval && saved.Prompt == m.watch.Prompt && saved.NextRunAt.Equal(m.watch.NextRunAt) && saved.LastRunAt.Equal(m.watch.LastRunAt) {
+	if saved.Active == m.watch.Active && saved.Interval == m.watch.Interval && saved.Prompt == m.watch.Prompt && saved.NextRunAt.Equal(m.watch.NextRunAt) && saved.LastRunAt.Equal(m.watch.LastRunAt) && saved.RunStatus == m.watch.RunStatus && saved.CompletedAt.Equal(m.watch.CompletedAt) && saved.RunError == m.watch.RunError && saved.SkippedCount == m.watch.SkippedCount {
 		return nil
 	}
 	saved.generation = m.watch.generation + 1
@@ -156,10 +173,18 @@ func (m *Model) handleWatchTick(msg watchTickMsg) (tea.Model, tea.Cmd) {
 	var submit tea.Cmd
 	// A recurring task must never clobber a draft or pile up behind a long
 	// model/tool run. Skip this tick and try again at the next interval.
-	if !m.streaming && strings.TrimSpace(m.composer.Value()) == "" && m.pendingPermission == nil && m.selectionPicker == nil && m.setup == nil && m.review == nil && !m.terminalVisible {
+	if !m.streaming && len(m.queuedInputs) == 0 && strings.TrimSpace(m.composer.Value()) == "" && m.pendingPermission == nil && m.selectionPicker == nil && m.setup == nil && m.review == nil && !m.terminalVisible {
 		m.watch.LastRunAt = now
+		m.watch.RunStatus = "queued"
+		m.watch.RunError = ""
 		m.queuedInputs = append(m.queuedInputs, m.watch.Prompt)
+		m.watchQueued = true
 		submit = m.nextQueuedSubmitCmd()
+	} else {
+		m.watch.SkippedCount++
+		if !m.watchRunPending {
+			m.watch.RunStatus = "skipped"
+		}
 	}
 	if err := m.persistWatchSchedule(); err != nil {
 		m.sessionSaveError = err.Error()
@@ -198,12 +223,22 @@ func (m *Model) loadWatchSchedule() {
 		return
 	}
 	saved.generation = m.watch.generation
+	if saved.RunStatus == "running" || saved.RunStatus == "queued" {
+		saved.RunStatus = "interrupted"
+		saved.RunError = "previous Rurushu process exited before the watch completed"
+		saved.CompletedAt = time.Now()
+	}
 	if saved.Active && saved.NextRunAt.IsZero() {
 		if interval, err := time.ParseDuration(saved.Interval); err == nil && interval > 0 {
 			saved.NextRunAt = time.Now().Add(interval)
 		}
 	}
 	m.watch = saved
+	if saved.RunStatus == "interrupted" && saved.RunError == "previous Rurushu process exited before the watch completed" {
+		if err := m.persistWatchSchedule(); err != nil {
+			m.sessionSaveError = err.Error()
+		}
+	}
 }
 
 func (m *Model) persistWatchSchedule() error {

@@ -90,6 +90,8 @@ type Model struct {
 	pastedContent       map[string]string
 	pasteCounter        int
 	watch               watchSchedule
+	watchQueued         bool
+	watchRunPending     bool
 }
 
 type streamStartedMsg struct {
@@ -342,6 +344,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if !msg.ok {
+			m.watchRunStatus("failed", "stream closed without completion")
 			m.finishStream()
 			return m, m.nextQueuedSubmitCmd()
 		}
@@ -366,6 +369,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		value := m.queuedInputs[0]
 		m.queuedInputs = m.queuedInputs[1:]
+		if m.watchQueued && value == m.watch.Prompt {
+			m.watchQueued = false
+			m.watchRunPending = true
+			m.watch.RunStatus = "running"
+			if err := m.persistWatchSchedule(); err != nil {
+				m.sessionSaveError = err.Error()
+			}
+		}
 		m.composer.SetValue(value)
 		m.layout()
 		return m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
@@ -474,6 +485,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.sessionStore != nil {
 				_ = m.syncWatchSchedule()
 				m.setup.EnableWatchEditor(m.watch.Active, m.watch.Interval, m.watch.Prompt, m.watch.NextRunAt, m.watch.LastRunAt, m.updateWatchFromSetup)
+				m.setup.SetWatchRunStatus(m.watch.RunStatus, m.watch.CompletedAt, m.watch.SkippedCount, m.watch.RunError)
 			}
 			m.setup.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
 			return m, m.setup.Init()
@@ -1073,6 +1085,7 @@ func (m *Model) applyStreamEvent(event provider.StreamEvent) bool {
 	case provider.EventDone:
 		m.commitAssistantHistory()
 		m.persistSessionWithWarning()
+		m.watchRunStatus("completed", "")
 		m.finishStream()
 		return true
 	}
@@ -1153,6 +1166,7 @@ func (m *Model) finishStreamWithError(err error) {
 	if err != nil {
 		message = "error: " + err.Error()
 	}
+	m.watchRunStatus("failed", message)
 	if len(m.messages) > 0 && m.messages[len(m.messages)-1].Role == roleAssistant {
 		content := strings.TrimSpace(m.messages[len(m.messages)-1].Content)
 		if content == "" {
@@ -1170,6 +1184,7 @@ func (m *Model) cancelActiveStream() {
 	if !m.streaming {
 		return
 	}
+	m.watchRunStatus("interrupted", "stream cancelled")
 	if m.cancelStream != nil {
 		m.cancelStream()
 	}

@@ -136,3 +136,61 @@ func TestWatchSyncLoadsExternalToolChanges(t *testing.T) {
 		t.Fatalf("external stop not synchronized: %+v", m.watch)
 	}
 }
+
+func TestWatchRunLifecyclePersistsCompletionAndFailure(t *testing.T) {
+	m := newWatchTestModel(t)
+	m.watch = watchSchedule{Version: watchVersion, Active: true, Interval: "5m0s", Prompt: "inspect", NextRunAt: time.Now(), generation: 3}
+	m.Update(watchTickMsg{generation: 3})
+	if m.watch.RunStatus != "queued" || !m.watchQueued {
+		t.Fatalf("queued: %+v", m.watch)
+	}
+	m.Update(queuedSubmitMsg{})
+	if m.watch.RunStatus != "running" || !m.watchRunPending {
+		t.Fatalf("running: %+v", m.watch)
+	}
+	m.watchRunStatus("completed", "")
+	if m.watch.RunStatus != "completed" || m.watch.CompletedAt.IsZero() {
+		t.Fatalf("completed: %+v", m.watch)
+	}
+	var saved watchSchedule
+	data, err := os.ReadFile(m.watchPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &saved); err != nil || saved.RunStatus != "completed" {
+		t.Fatalf("persisted: %+v %v", saved, err)
+	}
+	m.watchRunPending = true
+	m.watchRunStatus("failed", "timeout")
+	if m.watch.RunStatus != "failed" || m.watch.RunError != "timeout" {
+		t.Fatalf("failed: %+v", m.watch)
+	}
+}
+
+func TestWatchBusyTickRecordsSkippedWithoutOverwritingRunning(t *testing.T) {
+	m := newWatchTestModel(t)
+	m.watch = watchSchedule{Version: watchVersion, Active: true, Interval: "5m0s", Prompt: "inspect", NextRunAt: time.Now(), generation: 2, RunStatus: "running"}
+	m.streaming = true
+	m.watchRunPending = true
+	m.Update(watchTickMsg{generation: 2})
+	if m.watch.SkippedCount != 1 || m.watch.RunStatus != "running" {
+		t.Fatalf("wrong running status: %+v", m.watch)
+	}
+}
+
+func TestWatchRestoreMarksIncompleteRunInterrupted(t *testing.T) {
+	m := newWatchTestModel(t)
+	m.watch = watchSchedule{Version: watchVersion, Active: true, Interval: "5m0s", Prompt: "inspect", NextRunAt: time.Now().Add(time.Minute), RunStatus: "running"}
+	if err := m.persistWatchSchedule(); err != nil {
+		t.Fatal(err)
+	}
+	session, err := m.sessionStore.LoadSession(m.sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reloaded := New("test-model", "openai-compatible")
+	reloaded.SetProjectSession(m.sessionStore, session)
+	if reloaded.watch.RunStatus != "interrupted" || reloaded.watch.CompletedAt.IsZero() {
+		t.Fatalf("incomplete run not marked interrupted: %+v", reloaded.watch)
+	}
+}
