@@ -40,8 +40,9 @@ type Streamer interface {
 }
 
 type Model struct {
-	width  int
-	height int
+	reloadRequested bool
+	width           int
+	height          int
 
 	frame frameLayout
 
@@ -94,6 +95,8 @@ type Model struct {
 	watchRunPending     bool
 }
 
+func (m *Model) ReloadRequested() bool { return m.reloadRequested }
+
 type streamStartedMsg struct {
 	id     uint64
 	stream <-chan provider.StreamEvent
@@ -127,7 +130,7 @@ type progressTickMsg struct{}
 var progressFrames = []string{"◐", "◓", "◑", "◒"}
 
 func progressTick() tea.Cmd {
-	return tea.Tick(160*time.Millisecond, func(time.Time) tea.Msg { return progressTickMsg{} })
+	return tea.Tick(750*time.Millisecond, func(time.Time) tea.Msg { return progressTickMsg{} })
 }
 
 const (
@@ -288,7 +291,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case progressTickMsg:
 		if m.streaming {
 			m.progressFrame = (m.progressFrame + 1) % len(progressFrames)
-			m.refreshConversation()
+			// The status line animates independently; rebuilding the whole
+			// transcript every tick scales badly with conversation length.
 		}
 		return m, progressTick()
 	case tea.WindowSizeMsg:

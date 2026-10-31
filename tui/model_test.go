@@ -246,6 +246,25 @@ func TestProgressSpinnerReflectsStreamPhase(t *testing.T) {
 	}
 }
 
+func TestProgressTickDoesNotRebuildLongTranscript(t *testing.T) {
+	m := NewWithStreamer("test", "test", nil)
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.streaming = true
+	m.messages = []Message{{Role: roleAssistant, Content: "original transcript"}}
+	m.refreshConversation()
+	before := m.viewport.View()
+	// Changing the source without refreshing lets us detect an accidental
+	// full transcript rebuild from an animation-only event.
+	m.messages[0].Content = "modified transcript"
+	m.Update(progressTickMsg{})
+	if got := m.viewport.View(); got != before {
+		t.Fatal("spinner tick rebuilt transcript rather than updating status only")
+	}
+	if !strings.Contains(m.statusView(), progressFrames[m.progressFrame]) {
+		t.Fatal("spinner was not updated in the status line")
+	}
+}
+
 func TestMarkdownRenderAndActiveResponseProgress(t *testing.T) {
 	m := NewWithStreamer("test", "test", nil)
 	m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})

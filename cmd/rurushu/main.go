@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -217,7 +218,53 @@ func run(args []string) error {
 		uiModel.SetInitialInput(strings.Join(fs.Args(), " "))
 	}
 	_, err = tea.NewProgram(uiModel).Run()
-	return err
+	if err != nil {
+		return err
+	}
+	if uiModel.ReloadRequested() {
+		return rebuildAndReload(args, uiModel.SessionID())
+	}
+	return nil
+}
+
+func reloadArgs(args []string, sessionID string) []string {
+	result := make([]string, 0, len(args)+2)
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "-c", "--resume", "-resume":
+			if args[i] != "-c" && i+1 < len(args) {
+				i++
+			}
+		case "--resume=last", "-resume=last":
+		default:
+			if !strings.HasPrefix(args[i], "--resume=") && !strings.HasPrefix(args[i], "-resume=") {
+				result = append(result, args[i])
+			}
+		}
+	}
+	return append(result, "--resume", sessionID)
+}
+
+func rebuildAndReload(args []string, sessionID string) error {
+	executable, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	root := filepath.Dir(filepath.Dir(executable))
+	buildScript := filepath.Join(root, "build.sh")
+	if _, err := os.Stat(buildScript); err != nil {
+		return fmt.Errorf("reload requires source checkout at %s: %w", root, err)
+	}
+	fmt.Fprintln(os.Stderr, "rurushu: building new version before resuming", sessionID)
+	build := exec.Command("bash", buildScript, "--skip-tests")
+	build.Dir = root
+	build.Stdin, build.Stdout, build.Stderr = os.Stdin, os.Stdout, os.Stderr
+	if err := build.Run(); err != nil {
+		return fmt.Errorf("reload build failed (session retained, rerun with --resume %s): %w", sessionID, err)
+	}
+	command := exec.Command(filepath.Join(root, "bin", "rurushu"), reloadArgs(args, sessionID)...)
+	command.Stdin, command.Stdout, command.Stderr = os.Stdin, os.Stdout, os.Stderr
+	return command.Run()
 }
 
 func newPermissionHandler(autoApprove bool) (permission.Handler, <-chan *permission.Prompt) {

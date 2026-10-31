@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -100,5 +101,18 @@ func TestRunListModelsWithoutModel(t *testing.T) {
 	t.Setenv("OPENAI_MODEL", "")
 	if err := run([]string{"--base-url", server.URL, "--list-models", "--cwd", t.TempDir()}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestReloadArgsPreservesSessionAndProvider(t *testing.T) {
+	got := reloadArgs([]string{"-provider", "cos", "-c", "--activity", "debug"}, "ses_target")
+	want := []string{"-provider", "cos", "--activity", "debug", "--resume", "ses_target"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("reload args = %q, want %q", got, want)
+	}
+	got = reloadArgs([]string{"--resume", "ses_other", "--model", "test"}, "ses_target")
+	want = []string{"--model", "test", "--resume", "ses_target"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("reload args = %q, want %q", got, want)
 	}
 }

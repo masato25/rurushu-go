@@ -190,7 +190,10 @@ Local slash commands are handled by the TUI before a prompt reaches the model. T
 /jobs [id]  list managed jobs or inspect one job's recent output
 /stop <id>  stop a Rurushu-managed background job
 /watch [<interval> <instruction>|stop]  run a recurring instruction in this single chat session
+/reload  rebuild Rurushu and restart into exactly the current session
 ```
+
+When developing Rurushu from its source checkout, type `/reload` in an idle single-chat TUI to save the current session, exit the UI, run `build.sh --skip-tests`, and relaunch the rebuilt binary with `--resume <current-session-id>`. The selected provider and command-line settings are preserved; the session does not silently switch to the most recently used session. A failed build leaves the session saved and prints a manual resume command instead of launching a broken binary. Run tests separately before production use; reload deliberately skips tests for speed.
 
 For long-running monitor/maintenance work, `/watch` keeps the normal single-chat workflow and periodically sends the configured instruction back into the same session. For example:
 

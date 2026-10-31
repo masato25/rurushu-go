@@ -26,6 +26,23 @@ func (m *Model) registerSessionSlashCommands() {
 		return
 	}
 	_ = m.RegisterSlashCommand(SlashCommand{
+		Name: "reload", Usage: "/reload", Description: "build and restart Rurushu in the current session",
+		Run: func(args string) (SlashCommandResult, error) {
+			if strings.TrimSpace(args) != "" {
+				return SlashCommandResult{}, fmt.Errorf("/reload does not accept arguments")
+			}
+			if m.streaming || m.pendingPermission != nil {
+				return SlashCommandResult{}, fmt.Errorf("cannot reload while a request is active")
+			}
+			m.persistSessionWithWarning()
+			if m.sessionSaveError != "" {
+				return SlashCommandResult{}, fmt.Errorf("cannot reload: session save failed: %s", m.sessionSaveError)
+			}
+			m.reloadRequested = true
+			return SlashCommandResult{Quit: true}, nil
+		},
+	})
+	_ = m.RegisterSlashCommand(SlashCommand{
 		Name:        "sessions",
 		Usage:       "/sessions",
 		Description: "select a project session",
