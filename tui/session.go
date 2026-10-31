@@ -81,6 +81,9 @@ func (m *Model) registerSessionSlashCommands() {
 			if err != nil {
 				return SlashCommandResult{}, err
 			}
+			if err := m.sessionStore.HoldSession(session.ID); err != nil {
+				return SlashCommandResult{}, err
+			}
 			m.restoreSession(session)
 			return SlashCommandResult{Output: "started " + session.ID, cmd: m.watchTimerCmd()}, nil
 		},
@@ -178,6 +181,9 @@ func (m *Model) resumeSession(id string) (string, error) {
 		session, err = m.sessionStore.ActivateSession(id)
 	}
 	if err != nil {
+		return "", err
+	}
+	if err := m.sessionStore.HoldSession(session.ID); err != nil {
 		return "", err
 	}
 	if id == "last" {
@@ -282,6 +288,9 @@ func (m *Model) rewindAsk(askNumber int, asks []int) (string, error) {
 	if m.sessionStore != nil && parent != "" {
 		fork, err := m.sessionStore.ForkSession(parent, askNumber, m.modelName, m.provider, prefix)
 		if err != nil {
+			return "", err
+		}
+		if err := m.sessionStore.HoldSession(fork.ID); err != nil {
 			return "", err
 		}
 		m.sessionID = fork.ID

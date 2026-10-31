@@ -54,6 +54,65 @@ func TestProjectSessionRestoreRebuildsExactHistoryAndToolTranscript(t *testing.T
 	}
 }
 
+// Drive the same Enter/slash command path as the interactive TUI while using
+// an isolated store. Assert persistent state, not terminal escape sequences.
+func TestSessionCommandsOwnershipAndReloadE2E(t *testing.T) {
+	store, err := projectstate.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.StartSession("test", "cos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.HoldSession(first.ID); err != nil {
+		t.Fatal(err)
+	}
+	defer store.ReleaseSession()
+	m := NewWithStreamer("test", "cos", &fakeStreamer{})
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.SetProjectSession(store, first)
+	other, err := projectstate.Open(store.ProjectRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := other.HoldSession(first.ID); err == nil {
+		t.Fatal("second client acquired active session")
+	}
+	if cmd := submitSlashTest(t, m, "/new"); cmd != nil {
+		t.Fatal("/new spawned asynchronous command")
+	}
+	second := m.SessionID()
+	if second == first.ID {
+		t.Fatal("/new did not switch session")
+	}
+	if err := other.HoldSession(first.ID); err != nil {
+		t.Fatalf("old lease not released: %v", err)
+	}
+	if err := other.HoldSession(second); err == nil {
+		t.Fatal("new session is not owned")
+	}
+	other.ReleaseSession()
+	if cmd := submitSlashTest(t, m, "/resume "+first.ID); cmd != nil {
+		t.Fatal("/resume spawned asynchronous command")
+	}
+	if m.SessionID() != first.ID {
+		t.Fatalf("resumed %s", m.SessionID())
+	}
+	if err := other.HoldSession(second); err != nil {
+		t.Fatalf("second lease not released: %v", err)
+	}
+	other.ReleaseSession()
+	_ = submitSlashTest(t, m, "/reload")
+	if !m.ReloadRequested() || m.SessionID() != first.ID {
+		t.Fatal("reload did not preserve current session")
+	}
+	loaded, err := store.LoadSession(first.ID)
+	if err != nil || loaded.ID != first.ID {
+		t.Fatalf("session unavailable after reload request: %v", err)
+	}
+}
+
 func TestRewindForksSessionAndLoadsAskIntoComposer(t *testing.T) {
 	store, err := projectstate.Open(t.TempDir())
 	if err != nil {

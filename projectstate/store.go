@@ -14,6 +14,8 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/masato25/rurushu-go/provider"
@@ -22,6 +24,7 @@ import (
 const Version = 1
 const SessionVersion = 1
 const maxSessionBytes int64 = 16 * 1024 * 1024
+const sessionCompactJournalBytes int64 = 1 << 20
 
 type State struct {
 	Version     int    `json:"version"`
@@ -56,6 +59,20 @@ type sessionDelta struct {
 type Store struct {
 	ProjectRoot string
 	Dir         string
+	mu          sync.Mutex
+	cache       map[string]sessionCache
+	ownerFile   *os.File
+	ownerID     string
+}
+
+type sessionCache struct {
+	session        Session
+	baseHash       string
+	baseTime       time.Time
+	baseSize       int64
+	journalTime    time.Time
+	journalSize    int64
+	journalRecords int
 }
 
 func Open(projectRoot string) (*Store, error) {
@@ -239,7 +256,24 @@ func (s *Store) ListSessions() ([]Session, error) {
 }
 
 func (s *Store) SaveSession(id, model, providerID string, messages []provider.Message) (Session, error) {
-	session, err := s.LoadSession(id)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	unlock, err := s.lockSession(id)
+	if err != nil {
+		return Session{}, err
+	}
+	defer unlock()
+	entry, cached := s.cache[id]
+	if cached && !s.cacheIsCurrent(id, entry) {
+		cached = false
+	}
+	var session Session
+	err = nil
+	if cached {
+		session = entry.session
+	} else {
+		session, err = s.LoadSession(id)
+	}
 	if err != nil {
 		return Session{}, err
 	}
@@ -257,17 +291,25 @@ func (s *Store) SaveSession(id, model, providerID string, messages []provider.Me
 	// Append-only saves do not rewrite the entire conversation. If an older
 	// message was edited, take a new snapshot instead.
 	if len(session.Messages) > len(previous) && (len(previous) == 0 || reflect.DeepEqual(session.Messages[:len(previous)], previous)) {
-		base, err := os.ReadFile(s.sessionPath(id))
-		if err != nil {
-			return Session{}, err
+		baseHash := entry.baseHash
+		if !cached {
+			base, err := os.ReadFile(s.sessionPath(id))
+			if err != nil {
+				return Session{}, err
+			}
+			baseHash = hashSessionSnapshot(base)
 		}
-		record := sessionDelta{BaseHash: hashSessionSnapshot(base), Previous: len(previous), Messages: session.Messages[len(previous):], UpdatedAt: session.UpdatedAt, Model: session.Model, Provider: session.Provider}
+		record := sessionDelta{BaseHash: baseHash, Previous: len(previous), Messages: session.Messages[len(previous):], UpdatedAt: session.UpdatedAt, Model: session.Model, Provider: session.Provider}
 		if err := s.appendSessionDelta(id, record); err != nil {
 			return Session{}, err
 		}
 		if err := s.setLastSession(id); err != nil {
 			return Session{}, err
 		}
+		if err := s.maybeCompactSession(session); err != nil {
+			return Session{}, err
+		}
+		s.rememberSession(session)
 		return session, nil
 	}
 	// Encode once: the previous validation marshalled the entire history,
@@ -285,7 +327,104 @@ func (s *Store) SaveSession(id, model, providerID string, messages []provider.Me
 	if err := s.setLastSession(id); err != nil {
 		return Session{}, err
 	}
+	s.rememberSession(session)
 	return session, nil
+}
+
+// Serialize writers across Store instances and processes. The lock file is
+// never renamed or removed: replacing it would allow two different inodes
+// to be locked simultaneously.
+func (s *Store) lockSession(id string) (func(), error) {
+	if !validSessionID(id) {
+		return nil, fmt.Errorf("invalid session id %q", id)
+	}
+	path := filepath.Join(s.Dir, "sessions", id+".lock")
+	if info, err := os.Lstat(path); err == nil {
+		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("unsafe session lock %s", id)
+		}
+	} else if !os.IsNotExist(err) {
+		return nil, err
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("lock session %s: %w", id, err)
+	}
+	return func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN); _ = f.Close() }, nil
+}
+
+func (s *Store) cacheIsCurrent(id string, cached sessionCache) bool {
+	base, err := os.Stat(s.sessionPath(id))
+	if err != nil || base.Size() != cached.baseSize || !base.ModTime().Equal(cached.baseTime) {
+		return false
+	}
+	journal, err := os.Stat(s.deltaPath(id))
+	if os.IsNotExist(err) {
+		return cached.journalSize == 0
+	}
+	return err == nil && journal.Size() == cached.journalSize && journal.ModTime().Equal(cached.journalTime)
+}
+
+func (s *Store) rememberSession(session Session) {
+	info, err := os.Stat(s.sessionPath(session.ID))
+	if err != nil {
+		delete(s.cache, session.ID)
+		return
+	}
+	hash := ""
+	if old, ok := s.cache[session.ID]; ok && old.baseSize == info.Size() && old.baseTime.Equal(info.ModTime()) {
+		hash = old.baseHash
+	} else {
+		base, err := os.ReadFile(s.sessionPath(session.ID))
+		if err != nil {
+			delete(s.cache, session.ID)
+			return
+		}
+		hash = hashSessionSnapshot(base)
+	}
+	c := sessionCache{session: session, baseHash: hash, baseTime: info.ModTime(), baseSize: info.Size()}
+	if journal, err := os.Stat(s.deltaPath(session.ID)); err == nil {
+		c.journalTime, c.journalSize = journal.ModTime(), journal.Size()
+	}
+	if s.cache == nil {
+		s.cache = make(map[string]sessionCache)
+	}
+	// Keep only the active session to bound retained history memory.
+	clear(s.cache)
+	s.cache[session.ID] = c
+}
+
+func (s *Store) maybeCompactSession(session Session) error {
+	info, err := os.Stat(s.deltaPath(session.ID))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if info.Size() < sessionCompactJournalBytes {
+		return nil
+	}
+	data, err := json.MarshalIndent(session, "", "  ")
+	if err != nil {
+		return err
+	}
+	if int64(len(data)+1) > maxSessionBytes {
+		return fmt.Errorf("session %s exceeds snapshot size limit", session.ID)
+	}
+	// Replace snapshot first: the old journal hash then becomes stale and
+	// cannot replay a second time, even if interruption precedes cleanup.
+	if err := writeBytesAtomic(s.sessionPath(session.ID), append(data, '\n')); err != nil {
+		return err
+	}
+	if err := os.Remove(s.deltaPath(session.ID)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 func hashSessionSnapshot(data []byte) string {

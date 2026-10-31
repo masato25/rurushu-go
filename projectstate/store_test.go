@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/masato25/rurushu-go/provider"
 )
@@ -215,6 +218,185 @@ func TestSessionJournalAppendRestartAndSnapshotReset(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(loaded.Messages, history) {
 		t.Fatalf("after snapshot reset got=%+v err=%v", loaded.Messages, err)
 	}
+}
+
+func TestSessionJournalAutomaticCompactionAndCacheInvalidation(t *testing.T) {
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := store.StartSession("model", "cos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	history := []provider.Message{{Role: provider.RoleUser, Content: strings.Repeat("x", int(sessionCompactJournalBytes)+20)}}
+	if _, err = store.SaveSession(session.ID, "model", "cos", history); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = os.Stat(store.deltaPath(session.ID)); !os.IsNotExist(err) {
+		t.Fatalf("compacted journal should be absent: %v", err)
+	}
+	loaded, err := store.LoadSession(session.ID)
+	if err != nil || !reflect.DeepEqual(loaded.Messages, history) {
+		t.Fatalf("compacted session: %v", err)
+	}
+	// An independent Store appends to this session: cached history must refresh.
+	other, err := Open(store.ProjectRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	external := append(append([]provider.Message(nil), history...), provider.Message{Role: provider.RoleAssistant, Content: "external"})
+	if _, err = other.SaveSession(session.ID, "model", "cos", external); err != nil {
+		t.Fatal(err)
+	}
+	external = append(external, provider.Message{Role: provider.RoleUser, Content: "next"})
+	if _, err = store.SaveSession(session.ID, "model", "cos", external); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err = store.LoadSession(session.ID)
+	if err != nil || !reflect.DeepEqual(loaded.Messages, external) {
+		t.Fatalf("cache invalidation: %v", err)
+	}
+}
+
+func BenchmarkSessionIncrementalSave(b *testing.B) {
+	store, err := Open(b.TempDir())
+	if err != nil {
+		b.Fatal(err)
+	}
+	session, err := store.StartSession("model", "cos")
+	if err != nil {
+		b.Fatal(err)
+	}
+	history := make([]provider.Message, 1000)
+	for i := range history {
+		history[i] = provider.Message{Role: provider.RoleUser, Content: strings.Repeat("x", 128)}
+	}
+	if _, err = store.SaveSession(session.ID, "model", "cos", history); err != nil {
+		b.Fatal(err)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		history = append(history, provider.Message{Role: provider.RoleAssistant, Content: "reply"})
+		if _, err = store.SaveSession(session.ID, "model", "cos", history); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func TestSessionLockCrossProcess(t *testing.T) {
+	if os.Getenv("RURUSHU_LOCK_HELPER") == "1" {
+		store, err := Open(os.Getenv("RURUSHU_LOCK_ROOT"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		unlock, err := store.lockSession(os.Getenv("RURUSHU_LOCK_ID"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer unlock()
+		if err := os.WriteFile(os.Getenv("RURUSHU_LOCK_READY"), []byte("ready"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(250 * time.Millisecond)
+		return
+	}
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := store.StartSession("model", "cos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ready := filepath.Join(t.TempDir(), "ready")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestSessionLockCrossProcess$")
+	cmd.Env = append(os.Environ(), "RURUSHU_LOCK_HELPER=1", "RURUSHU_LOCK_ROOT="+store.ProjectRoot, "RURUSHU_LOCK_ID="+session.ID, "RURUSHU_LOCK_READY="+ready)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(ready); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("helper never acquired lock")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	begin := time.Now()
+	unlock, err := store.lockSession(session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unlock()
+	if time.Since(begin) < 150*time.Millisecond {
+		t.Fatal("another process did not block on lock")
+	}
+}
+
+func TestSessionOwnershipCrossProcess(t *testing.T) {
+	if os.Getenv("RURUSHU_OWNER_HELPER") == "1" {
+		store, err := Open(os.Getenv("RURUSHU_OWNER_ROOT"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.HoldSession(os.Getenv("RURUSHU_OWNER_ID")); err != nil {
+			t.Fatal(err)
+		}
+		defer store.ReleaseSession()
+		if err := os.WriteFile(os.Getenv("RURUSHU_OWNER_READY"), []byte("ready"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(400 * time.Millisecond)
+		return
+	}
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.StartSession("model", "cos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.StartSession("model", "cos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ready := filepath.Join(t.TempDir(), "ready")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestSessionOwnershipCrossProcess$")
+	cmd.Env = append(os.Environ(), "RURUSHU_OWNER_HELPER=1", "RURUSHU_OWNER_ROOT="+store.ProjectRoot, "RURUSHU_OWNER_ID="+first.ID, "RURUSHU_OWNER_READY="+ready)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(ready); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("owner helper did not start")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	start := time.Now()
+	if err := store.HoldSession(first.ID); err == nil {
+		t.Fatal("another process owns the session")
+	}
+	if time.Since(start) > 150*time.Millisecond {
+		t.Fatal("ownership check blocked")
+	}
+	if err := store.HoldSession(second.ID); err != nil {
+		t.Fatal(err)
+	}
+	_ = cmd.Wait()
+	if err := store.HoldSession(first.ID); err != nil {
+		t.Fatalf("cannot acquire released lease: %v", err)
+	}
+	store.ReleaseSession()
 }
 
 func TestLoadLegacyMetadataOnlySession(t *testing.T) {

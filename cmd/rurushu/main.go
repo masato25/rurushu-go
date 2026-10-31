@@ -193,6 +193,10 @@ func run(args []string) error {
 	if err != nil {
 		return fmt.Errorf("initialize project session: %w", err)
 	}
+	if err := projectStore.HoldSession(session.ID); err != nil {
+		return err
+	}
+	defer projectStore.ReleaseSession()
 
 	permissionHandler, permissionRequests := newPermissionHandler(*autoApprove)
 	registry := tool.NewRegistry()
