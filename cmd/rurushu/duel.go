@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"charm.land/bubbletea/v2"
+	rurushuconfig "github.com/masato25/rurushu-go/config"
 	"github.com/masato25/rurushu-go/duel"
 	"github.com/masato25/rurushu-go/projectstate"
 	"github.com/masato25/rurushu-go/provider"
@@ -374,22 +375,28 @@ func runDuel(args []string) error {
 	fs := flag.NewFlagSet("rurushu duel", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	cwdDefault, _ := os.Getwd()
+	saved, err := rurushuconfig.LoadForDir(cwdDefault)
+	if err != nil {
+		return err
+	}
 	cwd := fs.String("cwd", cwdDefault, "project directory")
 	goal := fs.String("goal", "", "task goal for both agents")
-	leftProviderName := fs.String("left-provider", firstNonEmpty(os.Getenv("RURUSHU_LEFT_PROVIDER"), os.Getenv("RURUSHU_PROVIDER"), "cos"), "LEFT provider: cos, openai-compatible, or ollama")
-	leftModelName := fs.String("left-model", firstNonEmpty(os.Getenv("RURUSHU_LEFT_MODEL"), os.Getenv("RURUSHU_MODEL")), "LEFT model (COS defaults to chatgpt-web)")
-	rightProviderName := fs.String("right-provider", firstNonEmpty(os.Getenv("RURUSHU_RIGHT_PROVIDER"), os.Getenv("RURUSHU_PROVIDER"), "cos"), "RIGHT provider: cos, openai-compatible, or ollama")
-	rightModelName := fs.String("right-model", firstNonEmpty(os.Getenv("RURUSHU_RIGHT_MODEL"), os.Getenv("RURUSHU_MODEL")), "RIGHT model (COS defaults to chatgpt-web)")
-	baseURL := fs.String("base-url", firstNonEmpty(os.Getenv("RURUSHU_BASE_URL"), os.Getenv("OPENAI_BASE_URL"), "https://api.openai.com/v1"), "OpenAI-compatible API base URL used by duel roles")
+	leftProviderName := fs.String("left-provider", firstNonEmpty(os.Getenv("RURUSHU_LEFT_PROVIDER"), os.Getenv("RURUSHU_PROVIDER"), saved.Duel.Left.Provider, "cos"), "LEFT provider: cos, openai-compatible, or ollama")
+	leftModelName := fs.String("left-model", firstNonEmpty(os.Getenv("RURUSHU_LEFT_MODEL"), os.Getenv("RURUSHU_MODEL"), saved.Duel.Left.Model), "LEFT model (COS defaults to chatgpt-web)")
+	rightProviderName := fs.String("right-provider", firstNonEmpty(os.Getenv("RURUSHU_RIGHT_PROVIDER"), os.Getenv("RURUSHU_PROVIDER"), saved.Duel.Right.Provider, "cos"), "RIGHT provider: cos, openai-compatible, or ollama")
+	rightModelName := fs.String("right-model", firstNonEmpty(os.Getenv("RURUSHU_RIGHT_MODEL"), os.Getenv("RURUSHU_MODEL"), saved.Duel.Right.Model), "RIGHT model (COS defaults to chatgpt-web)")
+	baseURL := fs.String("base-url", firstNonEmpty(os.Getenv("RURUSHU_BASE_URL"), os.Getenv("OPENAI_BASE_URL"), saved.BaseURL, "https://api.openai.com/v1"), "OpenAI-compatible API base URL used by duel roles")
 	apiKey := fs.String("api-key", firstNonEmpty(os.Getenv("RURUSHU_API_KEY"), os.Getenv("OPENAI_API_KEY")), "OpenAI-compatible API key used by duel roles")
-	ollamaURL := fs.String("ollama-url", firstNonEmpty(os.Getenv("RURUSHU_OLLAMA_URL"), "http://127.0.0.1:11434"), "Ollama server URL (without /v1 is also accepted)")
+	ollamaURL := fs.String("ollama-url", firstNonEmpty(os.Getenv("RURUSHU_OLLAMA_URL"), saved.Duel.OllamaURL, "http://127.0.0.1:11434"), "Ollama server URL (without /v1 is also accepted)")
 	resume := fs.Bool("resume", false, "resume existing LEFT/RIGHT sessions")
+	continueDuel := fs.Bool("continue", false, "continue the current project's existing duel (alias for --resume)")
 	newDuel := fs.Bool("new", false, "start a new duel with a fresh LEFT/RIGHT session pair")
 	runFor := fs.Duration("run-for", 0, "run a recurring duel for this duration (for example 10m)")
 	pollEvery := fs.Duration("poll-every", 30*time.Second, "recurring duel interval (for example 30s)")
 	fs.Usage = func() {
 		fmt.Fprintln(fs.Output(), `Usage:
   rurushu duel --new --goal "<goal>" [--run-for DURATION --poll-every DURATION]
+  rurushu duel --continue
   rurushu duel --resume
 
 Recurring duel:
@@ -435,6 +442,12 @@ Options:`)
 			return nil
 		}
 		return err
+	}
+	if *continueDuel {
+		if *newDuel {
+			return errors.New("--continue cannot be combined with --new")
+		}
+		*resume = true
 	}
 	pollEverySet, runForSet := false, false
 	fs.Visit(func(f *flag.Flag) {

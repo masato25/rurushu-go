@@ -314,34 +314,38 @@ The harness does not own queues, worker scheduling, business-job retries, checkp
 The duel is LEFT-led: LEFT works first like a normal single-chat implementation/research session, then RIGHT receives LEFT's final response and returns a lightweight review/coaching reply of at most 100 Unicode characters. That reply is fed back to LEFT on the next round. RIGHT may begin its reply with `DONE:` when the work is ready for owner review. Ctrl+C interrupts safely without recording success. The current duel IDs, provider/model assignments, round count and latest summary are saved at `.rurushu/duel-state.json`.
 
 ```bash
-go run ./cmd/rurushu duel --goal "Improve the project until it is ready for acceptance"
-# Resume the same two sessions after an interruption:
-go run ./cmd/rurushu duel --resume
+# One binary/alias is enough for both modes.
+rurushu
 
-# Existing duel state is reused by default; this does not create new LEFT/RIGHT sessions.
-go run ./cmd/rurushu duel --goal "continue the same task"
+# Start a fresh duel. If --goal is omitted, the TUI asks for it.
+rurushu duel --new --goal "continue development"
 
-# Start a fresh LEFT/RIGHT pair only when you intentionally want a new duel.
-go run ./cmd/rurushu duel --new --goal "start a different task"
-
-# LEFT and RIGHT may use different providers/models.
-go run ./cmd/rurushu duel --new \
-  --goal "continue development" \
-  --left-provider cos --left-model chatgpt-web \
-  --right-provider ollama \
-  --right-model "hf.co/unsloth/Qwen3.8-27B-GGUF:UD-IQ2_M" \
-  --ollama-url http://192.168.2.109:11434
-
-# Convenience launcher for the same COS LEFT + 27B Ollama RIGHT setup:
-# Continue the last Ollama RIGHT duel for the current project
-./scripts/duel-ollama-right.sh --continue
-
-# Or start a fresh duel with a new goal
-./scripts/duel-ollama-right.sh --new --goal "continue development"
+# Continue the current project's previous duel.
+rurushu duel --continue
 ```
 
-The Ollama launcher requires an explicit `--new`, `--continue`, or `--resume`. `--continue` is an alias for `--resume` and continues the current project's last duel. Continue/resume is accepted only when that project's persisted state already records `right_provider=ollama`.
+Provider/model defaults can be stored globally in `~/.config/rurushu/config.json` and overridden per project with `.rurushu/config.json`. CLI flags remain the highest-priority override. Example:
 
-The command opens a split-screen TUI: LEFT's work reports appear on the left, RIGHT's short feedback on the right, and an owner input area at the bottom. Enter submits additional instructions while the duel keeps working; Shift+Enter adds a line. Instructions are applied at the next role boundary, not injected into an in-flight turn. Ctrl+C exits and preserves the latest completed-round summary.
+```json
+{
+  "single": {
+    "provider": "cos",
+    "model": "chatgpt-web"
+  },
+  "duel": {
+    "left": {
+      "provider": "cos",
+      "model": "chatgpt-web"
+    },
+    "right": {
+      "provider": "ollama",
+      "model": "hf.co/unsloth/Qwen3.8-27B-GGUF:UD-IQ2_M"
+    },
+    "ollama_url": "http://192.168.2.109:11434"
+  }
+}
+```
+
+The duel TUI uses one chronological workspace: LEFT work, RIGHT feedback, and OWNER instructions are inserted into the same timeline. Enter submits additional owner instructions while the duel keeps working; Shift+Enter adds a line. Owner instructions are routed to LEFT at the next LEFT boundary, not consumed by RIGHT. Ctrl+C exits and preserves the latest completed-round summary.
 
 LEFT and RIGHT may use different providers. `cos`, `openai-compatible`, and `ollama` are supported by duel. Ollama uses its native `/api/chat` endpoint with thinking disabled so RIGHT's small completion budget is spent on the final feedback instead of hidden reasoning. Provider errors are surfaced instead of being interpreted as approval. This mode may make repeated model requests; use Ctrl+C to stop it manually.

@@ -67,18 +67,18 @@ func run(args []string) error {
 		return runSetup(args[1:])
 	}
 
-	saved, err := rurushuconfig.Load()
+	cwdDefault, _ := os.Getwd()
+	saved, err := rurushuconfig.LoadForDir(cwdDefault)
 	if err != nil {
 		return err
 	}
 	fs := flag.NewFlagSet("rurushu", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 
-	providerName := fs.String("provider", firstNonEmpty(os.Getenv("RURUSHU_PROVIDER"), "openai-compatible"), "provider: openai-compatible or cos")
+	providerName := fs.String("provider", firstNonEmpty(os.Getenv("RURUSHU_PROVIDER"), saved.Single.Provider, "openai-compatible"), "provider: openai-compatible or cos")
 	baseURL := fs.String("base-url", firstNonEmpty(os.Getenv("RURUSHU_BASE_URL"), os.Getenv("OPENAI_BASE_URL"), saved.BaseURL, "https://api.openai.com/v1"), "OpenAI-compatible API base URL")
 	apiKey := fs.String("api-key", firstNonEmpty(os.Getenv("RURUSHU_API_KEY"), os.Getenv("OPENAI_API_KEY"), saved.APIKey), "API key (prefer env vars)")
-	modelName := fs.String("model", firstNonEmpty(os.Getenv("RURUSHU_MODEL"), os.Getenv("OPENAI_MODEL"), saved.Model), "model name")
-	cwdDefault, _ := os.Getwd()
+	modelName := fs.String("model", firstNonEmpty(os.Getenv("RURUSHU_MODEL"), os.Getenv("OPENAI_MODEL"), saved.Single.Model, saved.Model), "model name")
 	cwd := fs.String("cwd", cwdDefault, "working directory exposed to the harness")
 	systemPrompt := fs.String("system-prompt", firstNonEmpty(saved.SystemPrompt, rurushuconfig.DefaultSystemPrompt), "system prompt")
 	maxSteps := fs.Int("max-steps", saved.MaxSteps, "maximum model/tool turns per request")

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	rurushuconfig "github.com/masato25/rurushu-go/config"
 	"github.com/masato25/rurushu-go/duel"
 	"github.com/masato25/rurushu-go/projectstate"
 )
@@ -58,12 +59,42 @@ func TestDuelHelpExplainsRecurringLifecycle(t *testing.T) {
 		"-right-model",
 		"rurushu duel --new",
 		"rurushu duel --resume",
+		"rurushu duel --continue",
 		"never shorten",
 		"not a daemon or system service",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("help missing %q:\n%s", want, got)
 		}
+	}
+}
+
+func TestDuelContinueRequiresState(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	if err := runDuel([]string{"--cwd", t.TempDir(), "--continue"}); err == nil {
+		t.Fatal("missing state accepted by --continue")
+	}
+}
+
+func TestDuelUsesConfiguredRoleDefaults(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", root)
+	_, err := rurushuconfig.Save(rurushuconfig.Config{
+		Duel: rurushuconfig.DuelConfig{
+			Left:      rurushuconfig.RoleConfig{Provider: "cos", Model: "chatgpt-web"},
+			Right:     rurushuconfig.RoleConfig{Provider: "ollama", Model: "configured-right"},
+			OllamaURL: "http://configured:11434",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := rurushuconfig.LoadForDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Duel.Left.Provider != "cos" || cfg.Duel.Right.Provider != "ollama" || cfg.Duel.Right.Model != "configured-right" {
+		t.Fatalf("duel defaults=%#v", cfg.Duel)
 	}
 }
 func TestDuelResumeRequiresState(t *testing.T) {
