@@ -26,24 +26,25 @@ type duelUpdate struct {
 	result     duel.Result
 	retry      bool
 	retryAfter time.Duration
+	active     bool
 }
 type duelUI struct {
-	width, height         int
-	left, right           viewport.Model
-	input                 textarea.Model
-	leftLines, rightLines []string
-	instructions          chan string
-	updates               chan duelUpdate
-	run                   func()
-	cancel                context.CancelFunc
-	stopped               bool
-	status                string
-	leftID, rightID       string
-	modal                 string
-	aux                   *tui.AuxiliaryWorkspace
-	newSession            func(role string) (string, error)
-	setInitialGoal        func(goal string) error
-	waitingForGoal        bool
+	width, height   int
+	work            viewport.Model
+	input           textarea.Model
+	workLines       []string
+	instructions    chan string
+	updates         chan duelUpdate
+	run             func()
+	cancel          context.CancelFunc
+	stopped         bool
+	status          string
+	leftID, rightID string
+	modal           string
+	aux             *tui.AuxiliaryWorkspace
+	newSession      func(role string) (string, error)
+	setInitialGoal  func(goal string) error
+	waitingForGoal  bool
 }
 
 type duelModalLayout struct {
@@ -54,12 +55,9 @@ type duelModalLayout struct {
 }
 
 func newDuelUI(instructions chan string, updates chan duelUpdate, run func(), cancel context.CancelFunc, sessionIDs ...string) *duelUI {
-	l := viewport.New(viewport.WithWidth(40), viewport.WithHeight(15))
-	r := viewport.New(viewport.WithWidth(40), viewport.WithHeight(15))
-	l.SoftWrap = true
-	r.SoftWrap = true
-	l.MouseWheelEnabled = true
-	r.MouseWheelEnabled = true
+	w := viewport.New(viewport.WithWidth(80), viewport.WithHeight(15))
+	w.SoftWrap = true
+	w.MouseWheelEnabled = true
 	t := textarea.New()
 	t.Placeholder = "主人輸入指令；思考中也可 Enter 預排，完成後自動接續"
 	t.ShowLineNumbers = false
@@ -69,7 +67,7 @@ func newDuelUI(instructions chan string, updates chan duelUpdate, run func(), ca
 	km := textarea.DefaultKeyMap()
 	km.InsertNewline.SetKeys("shift+enter", "ctrl+j")
 	t.KeyMap = km
-	m := &duelUI{left: l, right: r, input: t, instructions: instructions, updates: updates, run: run, cancel: cancel, status: "左右互搏進行中"}
+	m := &duelUI{work: w, input: t, instructions: instructions, updates: updates, run: run, cancel: cancel, status: "duel 進行中"}
 	if len(sessionIDs) > 0 {
 		m.leftID = sessionIDs[0]
 	}
@@ -105,16 +103,16 @@ func (m *duelUI) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	switch v := message.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = v.Width, v.Height
-		w := max(16, (m.width-3)/2)
 		m.input.SetWidth(max(1, m.width-4))
 		h := max(3, m.height-7)
-		m.left.SetWidth(w)
-		m.right.SetWidth(w)
-		m.left.SetHeight(h)
-		m.right.SetHeight(h)
-		m.left.SetContent(strings.Join(m.leftLines, "\n\n"))
-		m.right.SetContent(strings.Join(m.rightLines, "\n\n"))
+		m.work.SetWidth(max(16, m.width-2))
+		m.work.SetHeight(h)
+		m.work.SetContent(strings.Join(m.workLines, "\n\n"))
 	case duelUpdate:
+		if v.active {
+			m.status = fmt.Sprintf("%s 執行中 · ROUND %02d", strings.ToUpper(v.role), v.round)
+			return m, awaitDuelUpdate(m.updates)
+		}
 		if v.retry {
 			m.status = fmt.Sprintf("%s session 發生錯誤：%v · %s 後自動重試一次", strings.ToUpper(v.role), v.err, v.retryAfter)
 			return m, awaitDuelUpdate(m.updates)
@@ -134,34 +132,24 @@ func (m *duelUI) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			} else if v.result.Status == "deadline_reached" {
 				m.status = "輪詢期限已到 · 可輸入主人指令繼續"
 			} else {
-				m.status = "雙方同意，等待主人驗收：" + v.result.Summary
+				m.status = "等待主人驗收 · 請直接在下方輸入指令後 Enter 繼續"
 			}
 			if alert {
 				return m, tea.Batch(m.input.Focus(), tea.Raw("\a"))
 			}
 			return m, m.input.Focus()
 		}
-		entry := renderDuelTurn(v, max(16, (m.width-3)/2))
-		if v.role == "left" {
-			m.leftLines = append(m.leftLines, entry)
-			m.left.SetContent(strings.Join(m.leftLines, "\n\n"))
-			m.left.GotoBottom()
-		} else {
-			m.rightLines = append(m.rightLines, entry)
-			m.right.SetContent(strings.Join(m.rightLines, "\n\n"))
-			m.right.GotoBottom()
-		}
+		entry := renderDuelTurn(v, max(16, m.width-2))
+		m.workLines = append(m.workLines, entry)
+		m.work.SetContent(strings.Join(m.workLines, "\n\n"))
+		m.work.GotoBottom()
 		return m, awaitDuelUpdate(m.updates)
 	case tea.MouseWheelMsg:
 		if m.modal != "" {
 			return m, nil
 		}
 		if v.Y >= 1 && v.Y < m.height-5 {
-			if v.X < m.width/2 {
-				m.left, _ = m.left.Update(v)
-			} else {
-				m.right, _ = m.right.Update(v)
-			}
+			m.work, _ = m.work.Update(v)
 		}
 		return m, nil
 	case tea.MouseClickMsg:
@@ -250,6 +238,7 @@ func (m *duelUI) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				select {
 				case m.instructions <- note:
+					m.appendOwnerInstruction(note)
 					m.status = fmt.Sprintf("主人指令已預排 · 待送 %d 則", len(m.instructions))
 				default:
 					m.status = "指令佇列已滿，請稍後再試"
@@ -271,8 +260,7 @@ func (m *duelUI) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return m, awaitDuelUpdate(m.updates)
 			}
 		case "pgup", "pgdown", "home", "end":
-			m.left, _ = m.left.Update(message)
-			m.right, _ = m.right.Update(message)
+			m.work, _ = m.work.Update(message)
 			return m, nil
 		}
 		var cmd tea.Cmd
@@ -280,6 +268,19 @@ func (m *duelUI) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 	return m, nil
+}
+
+func (m *duelUI) appendOwnerInstruction(note string) {
+	note = strings.TrimSpace(note)
+	if note == "" {
+		return
+	}
+	label := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#E3C86F")).Render("● OWNER · INSTRUCTION")
+	divider := lipgloss.NewStyle().Foreground(lipgloss.Color("#515968")).Render(strings.Repeat("─", max(1, min(max(16, m.width-2)-3, 42))))
+	entry := label + "\n" + divider + "\n" + note
+	m.workLines = append(m.workLines, entry)
+	m.work.SetContent(strings.Join(m.workLines, "\n\n"))
+	m.work.GotoBottom()
 }
 
 func parseDuelNewSessionCommand(input string) (string, bool) {
@@ -295,7 +296,11 @@ func parseDuelNewSessionCommand(input string) (string, bool) {
 
 func renderDuelTurn(update duelUpdate, width int) string {
 	color := duelActionColor(update.turn.Action)
-	roundLabel := fmt.Sprintf("● ROUND %02d", update.round)
+	role := strings.ToUpper(strings.TrimSpace(update.role))
+	if role == "" {
+		role = "DUEL"
+	}
+	roundLabel := fmt.Sprintf("● %s · ROUND %02d", role, update.round)
 	if !update.roundTime.IsZero() {
 		roundLabel += " · " + update.roundTime.In(time.Local).Format("2006-01-02 15:04")
 	}
@@ -360,19 +365,15 @@ func (m *duelUI) View() tea.View {
 			return view
 		}
 	}
-	w := max(16, (m.width-3)/2)
 	headline := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#E6B450"))
-	leftTitle := " LEFT · 主力執行 "
-	rightTitle := " RIGHT · 短評回饋 "
+	title := " DUEL · 單一工作區 "
 	if m.leftID != "" {
-		leftTitle += "· " + m.leftID + " "
+		title += "· LEFT " + m.leftID + " "
 	}
 	if m.rightID != "" {
-		rightTitle += "· " + m.rightID + " "
+		title += "· RIGHT " + m.rightID + " "
 	}
-	left := headline.Render(leftTitle) + "\n" + m.left.View()
-	right := headline.Render(rightTitle) + "\n" + m.right.View()
-	view := lipgloss.JoinHorizontal(lipgloss.Top, lipgloss.NewStyle().Width(w).Render(left), " │ ", lipgloss.NewStyle().Width(w).Render(right))
+	view := headline.Render(title) + "\n" + m.work.View()
 	status := m.status
 	if pending := len(m.instructions); pending > 0 && !strings.Contains(status, "待送") {
 		status += fmt.Sprintf(" · 待送指令 %d 則", pending)

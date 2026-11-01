@@ -138,6 +138,25 @@ func TestDuelTUIShowsAutomaticRetryStatus(t *testing.T) {
 	}
 }
 
+func TestDuelTUIShowsActiveRoleStatus(t *testing.T) {
+	ui := newDuelUI(make(chan string, 4), make(chan duelUpdate, 4), func() {}, func() {})
+	_, cmd := ui.Update(duelUpdate{role: "left", round: 3, active: true})
+	if cmd == nil {
+		t.Fatal("active role status did not keep listening for updates")
+	}
+	if ui.status != "LEFT 執行中 · ROUND 03" {
+		t.Fatalf("status=%q", ui.status)
+	}
+
+	_, cmd = ui.Update(duelUpdate{role: "right", round: 3, active: true})
+	if cmd == nil {
+		t.Fatal("active role status did not keep listening for updates")
+	}
+	if ui.status != "RIGHT 執行中 · ROUND 03" {
+		t.Fatalf("status=%q", ui.status)
+	}
+}
+
 func TestDuelTUIFirstInputInitializesGoalAndStarts(t *testing.T) {
 	runCalled := make(chan struct{}, 1)
 	ui := newDuelUI(make(chan string, 4), make(chan duelUpdate, 4), func() { runCalled <- struct{}{} }, func() {})
@@ -187,20 +206,29 @@ func TestDuelTUIRoutesFunctionKeysToAuxiliaryWorkspace(t *testing.T) {
 	}
 }
 
-func TestDuelTUIRendersBothSides(t *testing.T) {
+func TestDuelTUIRendersSingleTimeline(t *testing.T) {
 	ui := newDuelUI(make(chan string, 4), make(chan duelUpdate, 4), func() {}, func() {}, "ses-left", "ses-right")
 	ui.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	ui.Update(duelUpdate{role: "right", round: 1, turn: duel.Turn{Action: "feedback", Summary: "review"}})
 	ui.Update(duelUpdate{role: "left", round: 1, turn: duel.Turn{Action: "work", Summary: "implemented"}})
 	view := ui.View().Content
-	for _, term := range []string{"主力執行", "短評回饋", "ses-left", "ses-right", "review", "implemented"} {
+	for _, term := range []string{"單一工作區", "ses-left", "ses-right", "RIGHT", "LEFT", "review", "implemented"} {
 		if !strings.Contains(view, term) {
 			t.Fatalf("missing %q in %s", term, view)
 		}
 	}
-	ui.Update(duelUpdate{done: true, result: duel.Result{Status: "owner_review", Summary: "done"}})
+	if strings.Index(view, "review") > strings.Index(view, "implemented") {
+		t.Fatalf("timeline did not preserve insertion order: %s", view)
+	}
+	ui.Update(duelUpdate{done: true, result: duel.Result{Status: "owner_review", Summary: strings.Repeat("very long review summary ", 100)}})
 	if !ui.stopped || !strings.Contains(ui.status, "等待主人驗收") {
 		t.Fatalf("unexpected finish state: %s", ui.status)
+	}
+	if strings.Contains(ui.status, "very long review summary") {
+		t.Fatalf("owner review status should not duplicate long summary: %q", ui.status)
+	}
+	if !strings.Contains(ui.View().Content, "請直接在下方輸入指令") {
+		t.Fatalf("owner review should keep a concise input hint visible: %q", ui.View().Content)
 	}
 }
 
@@ -238,8 +266,29 @@ func TestDuelTUIAcceptsPasteWhileWaitingForOwnerReview(t *testing.T) {
 	if got := <-notes; got != pasted {
 		t.Fatalf("submitted pasted owner instruction=%q want=%q", got, pasted)
 	}
+	view := ansi.Strip(ui.View().Content)
+	if !strings.Contains(view, "OWNER · INSTRUCTION") || !strings.Contains(view, "請協助我去驗收 ss") || !strings.Contains(view, "並確認測試結果") {
+		t.Fatalf("submitted owner instruction missing from timeline: %q", view)
+	}
 	if ui.stopped {
 		t.Fatal("duel did not restart after pasted owner instruction")
+	}
+}
+
+func TestDuelTUIShowsQueuedOwnerInstructionInTimeline(t *testing.T) {
+	notes := make(chan string, 4)
+	ui := newDuelUI(notes, make(chan duelUpdate, 4), func() {}, func() {})
+	ui.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	ui.Update(duelUpdate{role: "right", round: 4, turn: duel.Turn{Action: "feedback", Summary: "please verify"}})
+	ui.input.SetValue("驗收完成，繼續優化")
+	ui.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	view := ansi.Strip(ui.View().Content)
+	if !strings.Contains(view, "RIGHT · ROUND 04") || !strings.Contains(view, "OWNER · INSTRUCTION") || !strings.Contains(view, "驗收完成，繼續優化") {
+		t.Fatalf("timeline missing owner instruction context: %q", view)
+	}
+	if strings.Index(view, "OWNER · INSTRUCTION") < strings.Index(view, "RIGHT · ROUND 04") {
+		t.Fatalf("owner instruction appeared before preceding RIGHT feedback: %q", view)
 	}
 }
 
@@ -334,18 +383,12 @@ func TestDuelViewportMouseScrolling(t *testing.T) {
 	if !ui.View().AltScreen || ui.View().MouseMode == tea.MouseModeNone {
 		t.Fatal("duel must capture terminal wheel events")
 	}
-	ui.left.SetContent(strings.Repeat("left line\n", 100))
-	ui.right.SetContent(strings.Repeat("right line\n", 100))
-	ui.left.GotoBottom()
-	ui.right.GotoBottom()
-	rightBefore := ui.right.YOffset()
-	leftBefore := ui.left.YOffset()
+	ui.work.SetContent(strings.Repeat("timeline line\n", 100))
+	ui.work.GotoBottom()
+	before := ui.work.YOffset()
 	ui.Update(tea.MouseWheelMsg{X: 5, Y: 8, Button: tea.MouseWheelUp})
-	if ui.left.YOffset() >= leftBefore {
-		t.Fatal("left pane did not scroll")
-	}
-	if ui.right.YOffset() != rightBefore {
-		t.Fatal("right pane scrolled with left")
+	if ui.work.YOffset() >= before {
+		t.Fatal("timeline did not scroll")
 	}
 }
 

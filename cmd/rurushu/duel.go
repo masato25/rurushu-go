@@ -549,6 +549,16 @@ Options:`)
 			stateMu.Lock()
 			defer stateMu.Unlock()
 			return state.Goal
+		}, OnRoleStart: func(role string, round int) error {
+			stateMu.Lock()
+			shownRound := state.Rounds + 1
+			stateMu.Unlock()
+			select {
+			case updates <- duelUpdate{role: role, round: shownRound, active: true}:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 		}, OnRetry: func(role string, round int, delay time.Duration, retryErr error) error {
 			select {
 			case updates <- duelUpdate{role: role, round: round, err: retryErr, retry: true, retryAfter: delay}:

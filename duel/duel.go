@@ -27,6 +27,7 @@ type Options struct {
 	LeftModel, RightModel                 string
 	LeftStreamer, RightStreamer           Streamer
 	GoalFunc                              func() string
+	OnRoleStart                           func(role string, round int) error
 	OnTurn                                func(role string, round int, turn Turn) error
 	Instructions                          <-chan string
 	RetryDelay                            time.Duration
@@ -201,6 +202,11 @@ func Run(ctx context.Context, fallback Streamer, o Options) (Result, error) {
 		if err := ctx.Err(); err != nil {
 			return result, err
 		}
+		if o.OnRoleStart != nil {
+			if err := o.OnRoleStart("left", round); err != nil {
+				return result, err
+			}
+		}
 		ownerNotes := drainInstructions(o.Instructions)
 		goal := currentGoal(o)
 		var leftPrompt string
@@ -226,6 +232,11 @@ Do the useful work now. Do not wait for RIGHT to make a plan for you. Your final
 		}
 
 		goal = currentGoal(o)
+		if o.OnRoleStart != nil {
+			if err := o.OnRoleStart("right", round); err != nil {
+				return result, err
+			}
+		}
 		rightPrompt := fmt.Sprintf(`You are RIGHT, a lightweight reviewer/coach. LEFT is the primary agent and has just completed a work round.
 Goal: %s
 LEFT's final response:
@@ -302,6 +313,12 @@ func RunRecurring(ctx context.Context, fallback Streamer, o RecurringOptions) (R
 			return result, nil
 		}
 
+		if o.OnRoleStart != nil {
+			if err := o.OnRoleStart("left", round); err != nil {
+				return result, err
+			}
+		}
+
 		ownerNotes := drainInstructions(o.Instructions)
 		goal := currentGoal(o.Options)
 		var leftPrompt string
@@ -327,6 +344,11 @@ Use tools and perform useful work. Return a normal concise final work report; no
 		}
 
 		goal = currentGoal(o.Options)
+		if o.OnRoleStart != nil {
+			if err := o.OnRoleStart("right", round); err != nil {
+				return result, err
+			}
+		}
 		rightPrompt := fmt.Sprintf(`You are RIGHT, a lightweight reviewer/coach. LEFT is the primary agent.
 Goal: %s
 LEFT's final response:
