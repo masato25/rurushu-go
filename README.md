@@ -336,6 +336,8 @@ go run ./cmd/rurushu duel --new \
 ./scripts/duel-ollama-right.sh --new --goal "continue development"
 ```
 
+The Ollama launcher requires an explicit `--new` or `--resume`. This prevents it from silently reusing an older duel whose persisted RIGHT provider is still COS. `--resume` is accepted only when the existing duel state already records `right_provider=ollama`.
+
 The command opens a split-screen TUI: LEFT's work reports appear on the left, RIGHT's short feedback on the right, and an owner input area at the bottom. Enter submits additional instructions while the duel keeps working; Shift+Enter adds a line. Instructions are applied at the next role boundary, not injected into an in-flight turn. Ctrl+C exits and preserves the latest completed-round summary.
 
 LEFT and RIGHT may use different providers. `cos`, `openai-compatible`, and `ollama` are supported by duel. Ollama uses its native `/api/chat` endpoint with thinking disabled so RIGHT's small completion budget is spent on the final feedback instead of hidden reasoning. Provider errors are surfaced instead of being interpreted as approval. This mode may make repeated model requests; use Ctrl+C to stop it manually.
