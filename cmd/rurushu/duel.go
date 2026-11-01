@@ -630,32 +630,27 @@ Options:`)
 			_ = saveDuelState(path, state)
 		}
 	}
-	newRoleSession := func(role string) (string, error) {
+	newDuelSessions := func() (string, string, error) {
 		stateMu.Lock()
 		defer stateMu.Unlock()
-		cfg := duelRoleConfig{Provider: state.LeftProvider, Model: state.LeftModel}
-		if role == "right" {
-			cfg = duelRoleConfig{Provider: state.RightProvider, Model: state.RightModel}
-		}
-		cfg = normalizeDuelRoleConfig(cfg)
-		session, createErr := store.StartSession(cfg.Model, cfg.Provider)
+		leftCfg := normalizeDuelRoleConfig(duelRoleConfig{Provider: state.LeftProvider, Model: state.LeftModel})
+		rightCfg := normalizeDuelRoleConfig(duelRoleConfig{Provider: state.RightProvider, Model: state.RightModel})
+		leftSession, createErr := store.StartSession(leftCfg.Model, leftCfg.Provider)
 		if createErr != nil {
-			return "", createErr
+			return "", "", createErr
 		}
-		switch role {
-		case "left":
-			state.LeftID = session.ID
-		case "right":
-			state.RightID = session.ID
-		default:
-			return "", fmt.Errorf("unknown duel role %q", role)
+		rightSession, createErr := store.StartSession(rightCfg.Model, rightCfg.Provider)
+		if createErr != nil {
+			return "", "", createErr
 		}
+		state.LeftID = leftSession.ID
+		state.RightID = rightSession.ID
 		state.Status = "running"
 		state.LastError = ""
 		if saveErr := saveDuelState(path, state); saveErr != nil {
-			return "", saveErr
+			return "", "", saveErr
 		}
-		return session.ID, nil
+		return leftSession.ID, rightSession.ID, nil
 	}
 	ui := newDuelUI(instructions, updates, run, cancelAndPersist, state.LeftID, state.RightID)
 	aux := tuiPkg.NewAuxiliaryWorkspace(abs, terminalService)
@@ -673,7 +668,7 @@ Options:`)
 		aux.SetGoalEditor(state.Goal, updateGoal)
 	}
 	ui.setAuxiliaryWorkspace(aux)
-	ui.setNewSessionHandler(newRoleSession)
+	ui.setNewSessionHandler(newDuelSessions)
 	if waitingForGoal {
 		ui.setInitialGoalHandler(func(goal string) error {
 			created, createErr := createDuelState(store, path, goal, leftCfg, rightCfg)

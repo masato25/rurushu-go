@@ -70,17 +70,16 @@ func TestDuelTUIEscapeClearsCurrentInput(t *testing.T) {
 
 func TestParseDuelNewSessionCommand(t *testing.T) {
 	for _, tc := range []struct {
-		input, role string
-		ok          bool
+		input string
+		ok    bool
 	}{
-		{"/new left", "left", true},
-		{" /NEW RIGHT ", "right", true},
-		{"/new middle", "", false},
-		{"/new left extra", "", false},
+		{"/new", true},
+		{" /NEW ", true},
+		{"/new left", false},
+		{"/new right", false},
 	} {
-		role, ok := parseDuelNewSessionCommand(tc.input)
-		if role != tc.role || ok != tc.ok {
-			t.Fatalf("parse %q = (%q,%v), want (%q,%v)", tc.input, role, ok, tc.role, tc.ok)
+		if got := isDuelNewSessionCommand(tc.input); got != tc.ok {
+			t.Fatalf("parse %q = %v, want %v", tc.input, got, tc.ok)
 		}
 	}
 }
@@ -88,11 +87,11 @@ func TestParseDuelNewSessionCommand(t *testing.T) {
 func TestDuelTUINewSessionRequiresStoppedDuel(t *testing.T) {
 	ui := newDuelUI(make(chan string, 4), make(chan duelUpdate, 4), func() {}, func() {})
 	called := false
-	ui.setNewSessionHandler(func(role string) (string, error) {
+	ui.setNewSessionHandler(func() (string, string, error) {
 		called = true
-		return "ses-new", nil
+		return "ses-left-new", "ses-right-new", nil
 	})
-	ui.input.SetValue("/new left")
+	ui.input.SetValue("/new")
 	ui.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if called {
 		t.Fatal("running duel replaced a session")
@@ -102,23 +101,20 @@ func TestDuelTUINewSessionRequiresStoppedDuel(t *testing.T) {
 	}
 }
 
-func TestDuelTUINewSessionReplacesStoppedRoleAndRestarts(t *testing.T) {
+func TestDuelTUINewSessionReplacesBothStoppedSessionsAndRestarts(t *testing.T) {
 	runCalled := make(chan struct{}, 1)
 	ui := newDuelUI(make(chan string, 4), make(chan duelUpdate, 4), func() { runCalled <- struct{}{} }, func() {}, "ses-left-old", "ses-right")
 	ui.stopped = true
-	ui.setNewSessionHandler(func(role string) (string, error) {
-		if role != "left" {
-			t.Fatalf("role=%q", role)
-		}
-		return "ses-left-new", nil
+	ui.setNewSessionHandler(func() (string, string, error) {
+		return "ses-left-new", "ses-right-new", nil
 	})
-	ui.input.SetValue("/new left")
+	ui.input.SetValue("/new")
 	_, cmd := ui.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if cmd == nil {
 		t.Fatal("restart did not arm update listener")
 	}
-	if ui.leftID != "ses-left-new" || ui.stopped {
-		t.Fatalf("leftID=%q stopped=%v", ui.leftID, ui.stopped)
+	if ui.leftID != "ses-left-new" || ui.rightID != "ses-right-new" || ui.stopped {
+		t.Fatalf("leftID=%q rightID=%q stopped=%v", ui.leftID, ui.rightID, ui.stopped)
 	}
 	select {
 	case <-runCalled:
