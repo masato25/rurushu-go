@@ -309,10 +309,9 @@ Slash command input and output are local UI state and are not appended to model 
 
 The harness does not own queues, worker scheduling, business-job retries, checkpoints, durable memory, agent planning modes, or domain workflows. Those stay in the embedding application. The optional TUI and OpenAI-compatible adapter sit on top of the same library contracts rather than being required by the harness core.
 
-### COS two-session duel (左右互搏)
+### LEFT-led duel (左右互搏)
 
-Start two independently mapped COS sessions: RIGHT decides and reviews; LEFT executes and verifies.
-The process has **no fixed round limit**. Normal completion requires RIGHT to propose owner review and LEFT to explicitly agree in the same round. Ctrl+C interrupts safely without recording success. The current duel IDs, round count and latest summary are saved at `.rurushu/duel-state.json`.
+The duel is LEFT-led: LEFT works first like a normal single-chat implementation/research session, then RIGHT receives LEFT's final response and returns a lightweight review/coaching reply of at most 100 Unicode characters. That reply is fed back to LEFT on the next round. RIGHT may begin its reply with `DONE:` when the work is ready for owner review. Ctrl+C interrupts safely without recording success. The current duel IDs, provider/model assignments, round count and latest summary are saved at `.rurushu/duel-state.json`.
 
 ```bash
 go run ./cmd/rurushu duel --goal "Improve the project until it is ready for acceptance"
@@ -324,8 +323,19 @@ go run ./cmd/rurushu duel --goal "continue the same task"
 
 # Start a fresh LEFT/RIGHT pair only when you intentionally want a new duel.
 go run ./cmd/rurushu duel --new --goal "start a different task"
+
+# LEFT and RIGHT may use different providers/models.
+go run ./cmd/rurushu duel --new \
+  --goal "continue development" \
+  --left-provider cos --left-model chatgpt-web \
+  --right-provider ollama \
+  --right-model "hf.co/unsloth/Qwen3.8-27B-GGUF:UD-IQ2_M" \
+  --ollama-url http://192.168.2.109:11434
+
+# Convenience launcher for the same COS LEFT + 27B Ollama RIGHT setup:
+./scripts/duel-ollama-right.sh --new --goal "continue development"
 ```
 
-The command opens a split-screen TUI: LEFT's execution reports on the left, RIGHT's decisions on the right, and an owner input area at the bottom. Enter submits additional instructions while the duel keeps working; Shift+Enter adds a line. Instructions are applied at the next decision boundary, not injected into an in-flight COS turn. Ctrl+C exits and preserves the latest completed-round summary.
+The command opens a split-screen TUI: LEFT's work reports appear on the left, RIGHT's short feedback on the right, and an owner input area at the bottom. Enter submits additional instructions while the duel keeps working; Shift+Enter adds a line. Instructions are applied at the next role boundary, not injected into an in-flight turn. Ctrl+C exits and preserves the latest completed-round summary.
 
-When RIGHT cannot determine a next step, it is instructed to seek current web evidence and URLs through COS browsing capabilities. Web research depends on tools actually available to the remote ChatGPT session; the coordinator cannot independently guarantee that browsing occurred. The structured responses include evidence and must not fabricate sources. Provider errors are surfaced instead of being interpreted as approval. This mode may make repeated remote requests; use Ctrl+C to stop it manually.
+LEFT and RIGHT may use different providers. `cos`, `openai-compatible`, and `ollama` are supported by duel. Ollama uses its native `/api/chat` endpoint with thinking disabled so RIGHT's small completion budget is spent on the final feedback instead of hidden reasoning. Provider errors are surfaced instead of being interpreted as approval. This mode may make repeated model requests; use Ctrl+C to stop it manually.
