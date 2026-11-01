@@ -275,6 +275,13 @@ func TestResolveDuelStateCreatesIndependentProviderModelSessions(t *testing.T) {
 	}
 }
 
+func TestNormalizeDuelRoleConfigKeepsOllama(t *testing.T) {
+	got := normalizeDuelRoleConfig(duelRoleConfig{Provider: " OLLAMA ", Model: " qwen3:8b "})
+	if got.Provider != "ollama" || got.Model != "qwen3:8b" {
+		t.Fatalf("normalized=%+v", got)
+	}
+}
+
 func TestResolveDuelStateRejectsResumeAndNew(t *testing.T) {
 	store, err := projectstate.Open(t.TempDir())
 	if err != nil {

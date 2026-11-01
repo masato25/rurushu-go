@@ -355,7 +355,7 @@ func createDuelState(store *projectstate.Store, path, goal string, configs ...du
 	return state, nil
 }
 
-func newDuelProvider(cwd, name, baseURL, apiKey string) (provider.Provider, error) {
+func newDuelProvider(cwd, name, baseURL, apiKey, ollamaURL string) (provider.Provider, error) {
 	switch normalizeDuelRoleConfig(duelRoleConfig{Provider: name}).Provider {
 	case "cos":
 		p := provider.NewCOSProvider(cwd)
@@ -363,6 +363,8 @@ func newDuelProvider(cwd, name, baseURL, apiKey string) (provider.Provider, erro
 		return p, nil
 	case "openai-compatible":
 		return provider.NewOpenAICompatibleProvider(strings.TrimSpace(baseURL), strings.TrimSpace(apiKey)), nil
+	case "ollama":
+		return provider.NewOllamaProvider(ollamaURL), nil
 	default:
 		return nil, fmt.Errorf("unsupported duel provider %q", name)
 	}
@@ -374,12 +376,13 @@ func runDuel(args []string) error {
 	cwdDefault, _ := os.Getwd()
 	cwd := fs.String("cwd", cwdDefault, "project directory")
 	goal := fs.String("goal", "", "task goal for both agents")
-	leftProviderName := fs.String("left-provider", firstNonEmpty(os.Getenv("RURUSHU_LEFT_PROVIDER"), os.Getenv("RURUSHU_PROVIDER"), "cos"), "LEFT provider: cos or openai-compatible")
+	leftProviderName := fs.String("left-provider", firstNonEmpty(os.Getenv("RURUSHU_LEFT_PROVIDER"), os.Getenv("RURUSHU_PROVIDER"), "cos"), "LEFT provider: cos, openai-compatible, or ollama")
 	leftModelName := fs.String("left-model", firstNonEmpty(os.Getenv("RURUSHU_LEFT_MODEL"), os.Getenv("RURUSHU_MODEL")), "LEFT model (COS defaults to chatgpt-web)")
-	rightProviderName := fs.String("right-provider", firstNonEmpty(os.Getenv("RURUSHU_RIGHT_PROVIDER"), os.Getenv("RURUSHU_PROVIDER"), "cos"), "RIGHT provider: cos or openai-compatible")
+	rightProviderName := fs.String("right-provider", firstNonEmpty(os.Getenv("RURUSHU_RIGHT_PROVIDER"), os.Getenv("RURUSHU_PROVIDER"), "cos"), "RIGHT provider: cos, openai-compatible, or ollama")
 	rightModelName := fs.String("right-model", firstNonEmpty(os.Getenv("RURUSHU_RIGHT_MODEL"), os.Getenv("RURUSHU_MODEL")), "RIGHT model (COS defaults to chatgpt-web)")
 	baseURL := fs.String("base-url", firstNonEmpty(os.Getenv("RURUSHU_BASE_URL"), os.Getenv("OPENAI_BASE_URL"), "https://api.openai.com/v1"), "OpenAI-compatible API base URL used by duel roles")
 	apiKey := fs.String("api-key", firstNonEmpty(os.Getenv("RURUSHU_API_KEY"), os.Getenv("OPENAI_API_KEY")), "OpenAI-compatible API key used by duel roles")
+	ollamaURL := fs.String("ollama-url", firstNonEmpty(os.Getenv("RURUSHU_OLLAMA_URL"), "http://127.0.0.1:11434"), "Ollama server URL (without /v1 is also accepted)")
 	resume := fs.Bool("resume", false, "resume existing LEFT/RIGHT sessions")
 	newDuel := fs.Bool("new", false, "start a new duel with a fresh LEFT/RIGHT session pair")
 	runFor := fs.Duration("run-for", 0, "run a recurring duel for this duration (for example 10m)")
@@ -399,6 +402,11 @@ Conversation model:
   That short RIGHT reply is fed back to LEFT for the next work round.
   LEFT and RIGHT may use different providers and models.
   RIGHT can prefix a reply with DONE: when the task is ready for owner review.
+
+Ollama RIGHT example:
+  rurushu duel --new --goal "<goal>" \
+    --right-provider ollama --right-model qwen3:8b \
+    --ollama-url http://192.168.2.109:11434
 
 Example:
   rurushu duel --new \
@@ -517,11 +525,11 @@ Options:`)
 		activeLeftCfg = normalizeDuelRoleConfig(duelRoleConfig{Provider: state.LeftProvider, Model: state.LeftModel})
 		activeRightCfg = normalizeDuelRoleConfig(duelRoleConfig{Provider: state.RightProvider, Model: state.RightModel})
 	}
-	leftProvider, err := newDuelProvider(abs, activeLeftCfg.Provider, *baseURL, *apiKey)
+	leftProvider, err := newDuelProvider(abs, activeLeftCfg.Provider, *baseURL, *apiKey, *ollamaURL)
 	if err != nil {
 		return err
 	}
-	rightProvider, err := newDuelProvider(abs, activeRightCfg.Provider, *baseURL, *apiKey)
+	rightProvider, err := newDuelProvider(abs, activeRightCfg.Provider, *baseURL, *apiKey, *ollamaURL)
 	if err != nil {
 		return err
 	}
