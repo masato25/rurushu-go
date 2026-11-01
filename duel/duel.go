@@ -168,6 +168,18 @@ func rightDone(text string) bool {
 	return strings.HasPrefix(upper, "DONE:") || strings.HasPrefix(upper, "[DONE]") || upper == "DONE"
 }
 
+func compactLeftFollowup(ownerNotes, feedback string) string {
+	ownerNotes = strings.TrimSpace(ownerNotes)
+	feedback = strings.TrimSpace(feedback)
+	if ownerNotes == "" {
+		return feedback
+	}
+	if feedback == "" {
+		return "Owner instruction: " + ownerNotes
+	}
+	return "Owner instruction: " + ownerNotes + "\n\n" + feedback
+}
+
 // Run makes LEFT the primary working agent. LEFT behaves like a normal single
 // chat and produces an unconstrained final response. RIGHT only sees that final
 // response and returns a short coaching/review reply, which is fed back to LEFT
@@ -184,18 +196,24 @@ func Run(ctx context.Context, fallback Streamer, o Options) (Result, error) {
 	}
 	result := Result{Status: "running"}
 	feedback := strings.TrimSpace(o.InitialSummary)
+	continuingSession := feedback != ""
 	for round := 1; ; round++ {
 		if err := ctx.Err(); err != nil {
 			return result, err
 		}
 		ownerNotes := drainInstructions(o.Instructions)
 		goal := currentGoal(o)
-		leftPrompt := fmt.Sprintf(`You are LEFT, the primary implementation/execution agent in a duel. Work exactly like a normal single-chat coding/research session: investigate, use tools, make edits, run tests, and drive the task forward autonomously.
+		var leftPrompt string
+		if round == 1 && !continuingSession {
+			leftPrompt = fmt.Sprintf(`You are LEFT, the primary implementation/execution agent in a duel. Work exactly like a normal single-chat coding/research session: investigate, use tools, make edits, run tests, and drive the task forward autonomously.
 Goal: %s
 Owner instructions (highest priority): %s
 RIGHT feedback from the previous round: %s
 
 Do the useful work now. Do not wait for RIGHT to make a plan for you. Your final response should be your normal concise work report for this round; do not wrap it in JSON or a special protocol.`, goal, ownerNotes, firstNonEmptyText(feedback, "No RIGHT feedback yet; start from the goal."))
+		} else {
+			leftPrompt = compactLeftFollowup(ownerNotes, feedback)
+		}
 		leftText, err := callTextWithRetry(ctx, leftStreamer, o.LeftID, roleModel(o.LeftModel), leftPrompt, "left", round, nil, o)
 		if err != nil {
 			return result, fmt.Errorf("left round %d: %w", round, err)
@@ -262,6 +280,7 @@ func RunRecurring(ctx context.Context, fallback Streamer, o RecurringOptions) (R
 	}
 	result := Result{Status: "running"}
 	feedback := strings.TrimSpace(o.InitialSummary)
+	continuingSession := feedback != ""
 	next := o.NextPollAt
 	if next.IsZero() {
 		next = clock.Now()
@@ -287,12 +306,17 @@ func RunRecurring(ctx context.Context, fallback Streamer, o RecurringOptions) (R
 
 		ownerNotes := drainInstructions(o.Instructions)
 		goal := currentGoal(o.Options)
-		leftPrompt := fmt.Sprintf(`You are LEFT, the primary implementation/execution agent in a recurring duel. Work like a normal single-chat session and make concrete progress now.
+		var leftPrompt string
+		if round == 1 && !continuingSession {
+			leftPrompt = fmt.Sprintf(`You are LEFT, the primary implementation/execution agent in a recurring duel. Work like a normal single-chat session and make concrete progress now.
 Goal: %s
 Owner instructions (highest priority): %s
 RIGHT feedback from the previous round: %s
 
 Use tools and perform useful work. Return a normal concise final work report; no JSON protocol.`, goal, ownerNotes, firstNonEmptyText(feedback, "No RIGHT feedback yet; inspect the current state and act if useful."))
+		} else {
+			leftPrompt = compactLeftFollowup(ownerNotes, feedback)
+		}
 		leftText, err := callTextWithRetry(ctx, leftStreamer, o.LeftID, roleModel(o.LeftModel), leftPrompt, "left", round, nil, o.Options)
 		if err != nil {
 			return result, fmt.Errorf("left round %d: %w", round, err)

@@ -101,11 +101,53 @@ func TestRunIsLeftFirstAndFeedsRightReplyBackToLeft(t *testing.T) {
 	if !strings.Contains(s.requests[2].Messages[0].Content, "再檢查 migration 相容性。") {
 		t.Fatalf("RIGHT feedback not fed to LEFT: %s", s.requests[2].Messages[0].Content)
 	}
+	if got := s.requests[2].Messages[0].Content; got != "再檢查 migration 相容性。" {
+		t.Fatalf("follow-up LEFT prompt should contain only RIGHT feedback, got %q", got)
+	}
+	if strings.Contains(s.requests[2].Messages[0].Content, "You are LEFT") || strings.Contains(s.requests[2].Messages[0].Content, "Goal:") {
+		t.Fatalf("follow-up LEFT prompt repeated bootstrap context: %q", s.requests[2].Messages[0].Content)
+	}
 	if !strings.Contains(s.requests[1].Messages[0].Content, "LEFT completed implementation and tests.") {
 		t.Fatalf("LEFT final response not sent to RIGHT: %s", s.requests[1].Messages[0].Content)
 	}
 	if len(turns) != 4 || !strings.HasPrefix(turns[0], "left:1:") || !strings.HasPrefix(turns[1], "right:1:") {
 		t.Fatalf("turns=%v", turns)
+	}
+}
+
+func TestRunCompactLeftFollowupIncludesOnlyNewOwnerInstructionAndFeedback(t *testing.T) {
+	s := &scripted{outputs: []string{"first work", "keep going", "second work", "DONE: ready"}}
+	instructions := make(chan string, 1)
+	var injected bool
+	_, err := Run(context.Background(), s, Options{
+		Goal: "task", LeftID: "left", RightID: "right", Instructions: instructions,
+		OnTurn: func(role string, round int, turn Turn) error {
+			if role == "right" && round == 1 && !injected {
+				instructions <- "NEW_OWNER_NOTE"
+				injected = true
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "Owner instruction: NEW_OWNER_NOTE\n\nkeep going"
+	if got := s.requests[2].Messages[0].Content; got != want {
+		t.Fatalf("compact follow-up=%q want=%q", got, want)
+	}
+}
+
+func TestRunResumeStartsWithCompactLeftFollowup(t *testing.T) {
+	s := &scripted{outputs: []string{"resumed work", "DONE: ready"}}
+	_, err := Run(context.Background(), s, Options{
+		Goal: "task", LeftID: "left", RightID: "right", InitialSummary: "previous RIGHT feedback",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := s.requests[0].Messages[0].Content; got != "previous RIGHT feedback" {
+		t.Fatalf("resume LEFT prompt should be compact, got %q", got)
 	}
 }
 
@@ -200,6 +242,9 @@ func TestRunRecurringRunsLeftThenRightEachTickUntilDeadline(t *testing.T) {
 	}
 	if got := strings.Join(s.calls, ","); got != "left,right,left,right,left,right" {
 		t.Fatalf("calls=%s", got)
+	}
+	if got := s.requests[2].Messages[0].Content; got != "r1" {
+		t.Fatalf("recurring follow-up LEFT prompt should be compact, got %q", got)
 	}
 }
 
