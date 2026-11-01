@@ -1,9 +1,8 @@
-// Package duel coordinates two COS sessions until both agree to request owner review.
+// Package duel coordinates a primary LEFT worker with a lightweight RIGHT reviewer.
 package duel
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -12,24 +11,41 @@ import (
 	"github.com/masato25/rurushu-go/provider"
 )
 
-// Turn is a model's explicit decision; its verdict is not inferred from prose.
+// Turn is the display/persistence envelope for one LEFT or RIGHT response.
 type Turn struct {
 	Action   string `json:"action"`
 	Summary  string `json:"summary"`
 	Next     string `json:"next"`
 	Evidence string `json:"evidence"`
+	Content  string `json:"content,omitempty"`
 }
 type Streamer interface {
 	Stream(context.Context, provider.CompletionRequest) (<-chan provider.StreamEvent, error)
 }
 type Options struct {
 	Goal, LeftID, RightID, InitialSummary string
+	LeftModel, RightModel                 string
+	LeftStreamer, RightStreamer           Streamer
 	GoalFunc                              func() string
 	OnTurn                                func(role string, round int, turn Turn) error
 	Instructions                          <-chan string
 	RetryDelay                            time.Duration
 	RetryClock                            Clock
 	OnRetry                               func(role string, round int, delay time.Duration, err error) error
+}
+
+func roleStreamer(fallback Streamer, configured Streamer) Streamer {
+	if configured != nil {
+		return configured
+	}
+	return fallback
+}
+
+func roleModel(configured string) string {
+	if model := strings.TrimSpace(configured); model != "" {
+		return model
+	}
+	return duelModel
 }
 
 func currentGoal(o Options) string {
@@ -64,9 +80,7 @@ const (
 	duelReasoningEffort = "medium"
 )
 
-// RecurringOptions runs one RIGHT decision per poll tick. RIGHT plan/research
-// decisions are executed by LEFT in the same tick; wait schedules another
-// RIGHT-only observation tick; blocked/propose_review stop for owner input.
+// RecurringOptions runs one LEFT work turn plus one RIGHT feedback turn per tick.
 type RecurringOptions struct {
 	Options
 	PollEvery  time.Duration
@@ -76,61 +90,13 @@ type RecurringOptions struct {
 	OnSchedule func(next time.Time) error
 }
 
-func call(ctx context.Context, s Streamer, id, prompt string) (Turn, error) {
-	turn, err := callOnce(ctx, s, id, prompt)
-	if err == nil || ctx.Err() != nil {
-		return turn, err
-	}
-	var malformed *decisionFormatError
-	if !errors.As(err, &malformed) || !contentReferenceOnly(malformed.raw) {
-		return Turn{}, err
-	}
-	// One bounded recovery is allowed only for the known COS/DIL failure mode.
-	// Never replay the task itself and never retry arbitrary malformed prose:
-	// LEFT may already have completed real work in the previous native turn.
-	return callOnce(ctx, s, id, "Your previous response rendered as an empty content-reference placeholder. Do not repeat or redo any task or tool work. Reply only with the final decision for the work already completed as ONE JSON object containing action, summary, next, evidence. No markdown, tools, citations, or explanation outside JSON.")
-}
-
-func callWithRetry(ctx context.Context, s Streamer, id, prompt, role string, round int, o Options) (Turn, error) {
-	turn, err := call(ctx, s, id, prompt)
-	if err == nil || ctx.Err() != nil || o.RetryDelay <= 0 {
-		return turn, err
-	}
-	if o.OnRetry != nil {
-		if notifyErr := o.OnRetry(role, round, o.RetryDelay, err); notifyErr != nil {
-			return Turn{}, notifyErr
-		}
-	}
-	clock := o.RetryClock
-	if clock == nil {
-		clock = realClock{}
-	}
-	select {
-	case <-ctx.Done():
-		return Turn{}, ctx.Err()
-	case <-clock.After(o.RetryDelay):
-	}
-	turn, retryErr := call(ctx, s, id, prompt)
-	if retryErr != nil {
-		return Turn{}, fmt.Errorf("retry after %s failed: %w", o.RetryDelay, retryErr)
-	}
-	return turn, nil
-}
-
-type decisionFormatError struct {
-	text string
-	raw  string
-}
-
-func (e *decisionFormatError) Error() string { return e.text }
-
-func callOnce(ctx context.Context, s Streamer, id, prompt string) (Turn, error) {
+func callTextOnce(ctx context.Context, s Streamer, id, model, prompt string, maxTokens *int) (string, error) {
 	events, err := s.Stream(ctx, provider.CompletionRequest{
-		Model: duelModel, ReasoningEffort: duelReasoningEffort, SessionID: id,
+		Model: model, ReasoningEffort: duelReasoningEffort, SessionID: id, MaxTokens: maxTokens,
 		Messages: []provider.Message{{Role: provider.RoleUser, Content: prompt}},
 	})
 	if err != nil {
-		return Turn{}, err
+		return "", err
 	}
 	var output strings.Builder
 	done := false
@@ -145,139 +111,136 @@ func callOnce(ctx context.Context, s Streamer, id, prompt string) (Turn, error) 
 			done = true
 		case provider.EventError:
 			if ev.Error != nil {
-				return Turn{}, ev.Error
+				return "", ev.Error
 			}
-			return Turn{}, errors.New("COS stream failed")
+			return "", errors.New("provider stream failed")
 		}
 		if err := ctx.Err(); err != nil {
-			return Turn{}, err
+			return "", err
 		}
 	}
 	if !done {
-		return Turn{}, errors.New("COS turn closed without completion")
+		return "", errors.New("provider turn closed without completion")
 	}
-	return parseTurn(output.String())
+	return strings.TrimSpace(output.String()), nil
 }
 
-func contentReferenceOnly(raw string) bool {
-	rest := strings.TrimSpace(raw)
-	found := false
-	for rest != "" {
-		const prefix = "::chatgpt-content-reference{"
-		if !strings.HasPrefix(rest, prefix) {
-			return false
-		}
-		end := strings.IndexByte(rest[len(prefix):], '}')
-		if end < 0 {
-			return false
-		}
-		end += len(prefix)
-		found = true
-		rest = strings.TrimSpace(rest[end+1:])
+func callTextWithRetry(ctx context.Context, s Streamer, id, model, prompt, role string, round int, maxTokens *int, o Options) (string, error) {
+	text, err := callTextOnce(ctx, s, id, model, prompt, maxTokens)
+	if err == nil || ctx.Err() != nil || o.RetryDelay <= 0 {
+		return text, err
 	}
-	return found
+	if o.OnRetry != nil {
+		if notifyErr := o.OnRetry(role, round, o.RetryDelay, err); notifyErr != nil {
+			return "", notifyErr
+		}
+	}
+	clock := o.RetryClock
+	if clock == nil {
+		clock = realClock{}
+	}
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case <-clock.After(o.RetryDelay):
+	}
+	text, retryErr := callTextOnce(ctx, s, id, model, prompt, maxTokens)
+	if retryErr != nil {
+		return "", fmt.Errorf("retry after %s failed: %w", o.RetryDelay, retryErr)
+	}
+	return text, nil
 }
 
-// COS can include tool activity and intermediate messages before the final
-// assistant response. Scan for complete JSON objects and use the last valid
-// decision, rather than parsing the full mixed transcript as one JSON value.
-func parseTurn(raw string) (Turn, error) {
-	var last Turn
-	found := false
-	for offset := 0; offset < len(raw); offset++ {
-		if raw[offset] != '{' {
-			continue
-		}
-		var turn Turn
-		decoder := json.NewDecoder(strings.NewReader(raw[offset:]))
-		if err := decoder.Decode(&turn); err != nil {
-			continue
-		}
-		if strings.TrimSpace(turn.Action) == "" || strings.TrimSpace(turn.Summary) == "" {
-			continue
-		}
-		last, found = turn, true
+func truncateRunes(text string, limit int) string {
+	text = strings.TrimSpace(text)
+	if limit <= 0 {
+		return ""
 	}
-	if !found {
-		return Turn{}, &decisionFormatError{text: fmt.Sprintf("COS response has no complete decision JSON: %.200s", strings.TrimSpace(raw)), raw: raw}
+	r := []rune(text)
+	if len(r) <= limit {
+		return text
 	}
-	return last, nil
+	return strings.TrimSpace(string(r[:limit]))
 }
 
-// Run has no maximum rounds. It stops normally only on bilateral agreement.
-// Cancellation or provider errors are exceptional exits, never success.
-func Run(ctx context.Context, s Streamer, o Options) (Result, error) {
+func rightDone(text string) bool {
+	upper := strings.ToUpper(strings.TrimSpace(text))
+	return strings.HasPrefix(upper, "DONE:") || strings.HasPrefix(upper, "[DONE]") || upper == "DONE"
+}
+
+// Run makes LEFT the primary working agent. LEFT behaves like a normal single
+// chat and produces an unconstrained final response. RIGHT only sees that final
+// response and returns a short coaching/review reply, which is fed back to LEFT
+// on the next round. RIGHT may prefix its reply with DONE: when owner review is
+// appropriate; otherwise the loop continues until cancellation/error.
+func Run(ctx context.Context, fallback Streamer, o Options) (Result, error) {
 	if currentGoal(o) == "" || o.LeftID == "" || o.RightID == "" || o.LeftID == o.RightID {
 		return Result{}, errors.New("a goal and two distinct session IDs are required")
 	}
-	result := Result{Status: "running"}
-	previous := strings.TrimSpace(o.InitialSummary)
-	if previous == "" {
-		previous = "No work yet."
+	leftStreamer := roleStreamer(fallback, o.LeftStreamer)
+	rightStreamer := roleStreamer(fallback, o.RightStreamer)
+	if leftStreamer == nil || rightStreamer == nil {
+		return Result{}, errors.New("left and right streamers are required")
 	}
+	result := Result{Status: "running"}
+	feedback := strings.TrimSpace(o.InitialSummary)
 	for round := 1; ; round++ {
 		if err := ctx.Err(); err != nil {
 			return result, err
 		}
 		ownerNotes := drainInstructions(o.Instructions)
 		goal := currentGoal(o)
-		rightPrompt := fmt.Sprintf(`You are RIGHT (decision/review). Goal: %s
-Owner instructions (highest task priority): %s
-Current evidence from LEFT: %s
-Decide the next concrete, testable work step. If stuck, research on the web yourself using available browsing tools. Report verified source URLs and findings in evidence; if browsing is unavailable use action=research and next must request external research from LEFT. If no actionable local work exists and progress requires an external event or owner authorization, action=blocked; do not repeat previous work. If you believe the goal is satisfied, action=propose_review with reasons in evidence. Never claim an online search unless you actually performed it.
-Reply ONLY JSON: {"action":"plan|research|blocked|propose_review","summary":"current concise summary","next":"specific instructions or precise unblock condition","evidence":"test evidence or caveats"}`, goal, ownerNotes, previous)
-		right, err := callWithRetry(ctx, s, o.RightID, rightPrompt, "right", round, o)
-		if err != nil {
-			return result, fmt.Errorf("right round %d: %w", round, err)
-		}
-		if right.Action != "plan" && right.Action != "research" && right.Action != "blocked" && right.Action != "propose_review" {
-			return result, fmt.Errorf("right round %d: invalid action %q", round, right.Action)
-		}
-		if o.OnTurn != nil {
-			if err := o.OnTurn("right", round, right); err != nil {
-				return result, err
-			}
-		}
-		ownerNotes = strings.TrimSpace(ownerNotes + "\n" + drainInstructions(o.Instructions))
-		goal = currentGoal(o)
-		leftPrompt := fmt.Sprintf(`You are LEFT (implementation/execution). Goal: %s
-Owner instructions (highest task priority): %s
-RIGHT's assessment: %s
-RIGHT's action: %s
-RIGHT's requested next step: %s
-RIGHT's evidence: %s
-Execute or investigate using available tools, verify results, and report facts. If action is research, collect current online sources if browser/search tools are available; never invent citations. If RIGHT says blocked, independently check whether any actionable work remains; reply action=blocked if both sides must wait for an external condition, without repeating tests or making unnecessary requests. If action is propose_review, independently verify completion, and action=agree_review only if genuinely ready; otherwise action=continue.
-Reply ONLY JSON: {"action":"continue|blocked|agree_review","summary":"work completed and remaining issues","next":"what RIGHT should consider or unblock condition","evidence":"tests or URLs actually checked"}`, goal, ownerNotes, right.Summary, right.Action, right.Next, right.Evidence)
-		left, err := callWithRetry(ctx, s, o.LeftID, leftPrompt, "left", round, o)
+		leftPrompt := fmt.Sprintf(`You are LEFT, the primary implementation/execution agent in a duel. Work exactly like a normal single-chat coding/research session: investigate, use tools, make edits, run tests, and drive the task forward autonomously.
+Goal: %s
+Owner instructions (highest priority): %s
+RIGHT feedback from the previous round: %s
+
+Do the useful work now. Do not wait for RIGHT to make a plan for you. Your final response should be your normal concise work report for this round; do not wrap it in JSON or a special protocol.`, goal, ownerNotes, firstNonEmptyText(feedback, "No RIGHT feedback yet; start from the goal."))
+		leftText, err := callTextWithRetry(ctx, leftStreamer, o.LeftID, roleModel(o.LeftModel), leftPrompt, "left", round, nil, o)
 		if err != nil {
 			return result, fmt.Errorf("left round %d: %w", round, err)
 		}
-		if left.Action != "continue" && left.Action != "blocked" && left.Action != "agree_review" {
-			return result, fmt.Errorf("left round %d: invalid action %q", round, left.Action)
-		}
+		leftTurn := Turn{Action: "work", Summary: leftText, Content: leftText}
 		if o.OnTurn != nil {
-			if err := o.OnTurn("left", round, left); err != nil {
+			if err := o.OnTurn("left", round, leftTurn); err != nil {
+				return result, err
+			}
+		}
+
+		ownerNotes = strings.TrimSpace(ownerNotes + "\n" + drainInstructions(o.Instructions))
+		goal = currentGoal(o)
+		rightPrompt := fmt.Sprintf(`You are RIGHT, a lightweight reviewer/coach. LEFT is the primary agent and has just completed a work round.
+Goal: %s
+Owner instructions: %s
+LEFT's final response:
+%s
+
+Reply directly to LEFT with only the most useful reaction, correction, question, or suggestion for what it should do next. Do not take over planning or execution. Keep the entire reply within 100 Unicode characters. No JSON, no markdown wrapper. If the task is genuinely ready for owner review, begin with "DONE:" and briefly say why.`, goal, ownerNotes, leftText)
+		rightMaxTokens := 96
+		rightText, err := callTextWithRetry(ctx, rightStreamer, o.RightID, roleModel(o.RightModel), rightPrompt, "right", round, &rightMaxTokens, o)
+		if err != nil {
+			return result, fmt.Errorf("right round %d: %w", round, err)
+		}
+		rightText = truncateRunes(rightText, 100)
+		rightTurn := Turn{Action: "feedback", Summary: rightText, Content: rightText}
+		if o.OnTurn != nil {
+			if err := o.OnTurn("right", round, rightTurn); err != nil {
 				return result, err
 			}
 		}
 		result.Rounds = round
-		result.Summary = left.Summary
-		if right.Action == "propose_review" && left.Action == "agree_review" {
+		result.Summary = leftText
+		if rightDone(rightText) {
 			result.Status = "owner_review"
 			return result, nil
 		}
-		if right.Action == "blocked" && left.Action == "blocked" {
-			result.Status = "blocked"
-			result.Summary = fmt.Sprintf("RIGHT: %s; LEFT: %s; unblock: %s", right.Summary, left.Summary, right.Next)
-			return result, nil
-		}
-		previous = fmt.Sprintf("Round %d: RIGHT: %s. LEFT: %s. Evidence: %s. LEFT next: %s", round, right.Summary, left.Summary, left.Evidence, left.Next)
+		feedback = rightText
 	}
 }
 
-// RunRecurring executes at most one RIGHT/LEFT work cycle per poll tick until
-// the persisted deadline is reached or RIGHT asks to stop for owner input.
-func RunRecurring(ctx context.Context, s Streamer, o RecurringOptions) (Result, error) {
+// RunRecurring executes one LEFT/RIGHT cycle per poll tick until the persisted
+// deadline is reached or RIGHT marks the work ready for owner review.
+func RunRecurring(ctx context.Context, fallback Streamer, o RecurringOptions) (Result, error) {
 	if currentGoal(o.Options) == "" || o.LeftID == "" || o.RightID == "" || o.LeftID == o.RightID {
 		return Result{}, errors.New("a goal and two distinct session IDs are required")
 	}
@@ -292,11 +255,13 @@ func RunRecurring(ctx context.Context, s Streamer, o RecurringOptions) (Result, 
 		return Result{}, errors.New("recurring duel requires a deadline")
 	}
 
-	result := Result{Status: "running"}
-	previous := strings.TrimSpace(o.InitialSummary)
-	if previous == "" {
-		previous = "No work yet."
+	leftStreamer := roleStreamer(fallback, o.LeftStreamer)
+	rightStreamer := roleStreamer(fallback, o.RightStreamer)
+	if leftStreamer == nil || rightStreamer == nil {
+		return Result{}, errors.New("left and right streamers are required")
 	}
+	result := Result{Status: "running"}
+	feedback := strings.TrimSpace(o.InitialSummary)
 	next := o.NextPollAt
 	if next.IsZero() {
 		next = clock.Now()
@@ -322,66 +287,51 @@ func RunRecurring(ctx context.Context, s Streamer, o RecurringOptions) (Result, 
 
 		ownerNotes := drainInstructions(o.Instructions)
 		goal := currentGoal(o.Options)
-		rightPrompt := fmt.Sprintf(`You are RIGHT (decision/review). Goal: %s
-Owner instructions (highest task priority): %s
-Current evidence from LEFT: %s
-Decide the next concrete, testable work step. Use action=wait when no LEFT work is useful now but a future poll may observe a changed market/RPC/process condition; wait must include the current observation/evidence and what the next poll should re-check. Use blocked only when progress requires owner authorization, a secret/manual action, or another external condition this loop cannot independently resolve. If stuck on research, research on the web yourself using available browsing tools; use action=research when LEFT should perform external research. If you believe the goal is satisfied, action=propose_review. Never claim an online search unless you actually performed it.
-Reply ONLY JSON: {"action":"plan|research|wait|blocked|propose_review","summary":"current concise summary or observation","next":"specific instructions, next observation target, or unblock condition","evidence":"test evidence or caveats"}`, goal, ownerNotes, previous)
-		right, err := callWithRetry(ctx, s, o.RightID, rightPrompt, "right", round, o.Options)
+		leftPrompt := fmt.Sprintf(`You are LEFT, the primary implementation/execution agent in a recurring duel. Work like a normal single-chat session and make concrete progress now.
+Goal: %s
+Owner instructions (highest priority): %s
+RIGHT feedback from the previous round: %s
+
+Use tools and perform useful work. Return a normal concise final work report; no JSON protocol.`, goal, ownerNotes, firstNonEmptyText(feedback, "No RIGHT feedback yet; inspect the current state and act if useful."))
+		leftText, err := callTextWithRetry(ctx, leftStreamer, o.LeftID, roleModel(o.LeftModel), leftPrompt, "left", round, nil, o.Options)
 		if err != nil {
-			return result, fmt.Errorf("right round %d: %w", round, err)
+			return result, fmt.Errorf("left round %d: %w", round, err)
 		}
-		if right.Action != "plan" && right.Action != "research" && right.Action != "wait" && right.Action != "blocked" && right.Action != "propose_review" {
-			return result, fmt.Errorf("right round %d: invalid action %q", round, right.Action)
-		}
+		leftTurn := Turn{Action: "work", Summary: leftText, Content: leftText}
 		if o.OnTurn != nil {
-			if err := o.OnTurn("right", round, right); err != nil {
+			if err := o.OnTurn("left", round, leftTurn); err != nil {
 				return result, err
 			}
-		}
-		if right.Action == "blocked" || right.Action == "propose_review" {
-			result.Status = right.Action
-			result.Summary = right.Summary
-			return result, nil
-		}
-		if right.Action == "wait" {
-			result.Rounds = round
-			result.Summary = right.Summary
-			previous = fmt.Sprintf("Round %d RIGHT observation: %s. Evidence: %s. Next observation: %s", round, right.Summary, right.Evidence, right.Next)
-			next = clock.Now().Add(o.PollEvery)
-			if o.OnSchedule != nil {
-				if err := o.OnSchedule(next); err != nil {
-					return result, err
-				}
-			}
-			continue
 		}
 
 		ownerNotes = strings.TrimSpace(ownerNotes + "\n" + drainInstructions(o.Instructions))
 		goal = currentGoal(o.Options)
-		leftPrompt := fmt.Sprintf(`You are LEFT (implementation/execution). Goal: %s
-Owner instructions (highest task priority): %s
-RIGHT's assessment: %s
-RIGHT's action: %s
-RIGHT's requested next step: %s
-RIGHT's evidence: %s
-Execute or investigate using available tools, verify results, and report facts. If action is research, collect current online sources if browser/search tools are available; never invent citations. If RIGHT says blocked, independently check whether any actionable work remains; reply action=blocked if both sides must wait for an external condition, without repeating tests or making unnecessary requests. If action is propose_review, independently verify completion, and action=agree_review only if genuinely ready; otherwise action=continue.
-Reply ONLY JSON: {"action":"continue|blocked|agree_review","summary":"work completed and remaining issues","next":"what RIGHT should consider or unblock condition","evidence":"tests or URLs actually checked"}`, goal, ownerNotes, right.Summary, right.Action, right.Next, right.Evidence)
-		left, err := callWithRetry(ctx, s, o.LeftID, leftPrompt, "left", round, o.Options)
+		rightPrompt := fmt.Sprintf(`You are RIGHT, a lightweight reviewer/coach. LEFT is the primary agent.
+Goal: %s
+Owner instructions: %s
+LEFT's final response:
+%s
+
+Reply directly to LEFT with the single most useful reaction/correction/suggestion. Do not take over execution. Maximum 100 Unicode characters. No JSON. If ready for owner review, begin with "DONE:".`, goal, ownerNotes, leftText)
+		rightMaxTokens := 96
+		rightText, err := callTextWithRetry(ctx, rightStreamer, o.RightID, roleModel(o.RightModel), rightPrompt, "right", round, &rightMaxTokens, o.Options)
 		if err != nil {
-			return result, fmt.Errorf("left round %d: %w", round, err)
+			return result, fmt.Errorf("right round %d: %w", round, err)
 		}
-		if left.Action != "continue" && left.Action != "blocked" && left.Action != "agree_review" {
-			return result, fmt.Errorf("left round %d: invalid action %q", round, left.Action)
-		}
+		rightText = truncateRunes(rightText, 100)
+		rightTurn := Turn{Action: "feedback", Summary: rightText, Content: rightText}
 		if o.OnTurn != nil {
-			if err := o.OnTurn("left", round, left); err != nil {
+			if err := o.OnTurn("right", round, rightTurn); err != nil {
 				return result, err
 			}
 		}
 		result.Rounds = round
-		result.Summary = left.Summary
-		previous = fmt.Sprintf("Round %d: RIGHT: %s. LEFT: %s. Evidence: %s. LEFT next: %s", round, right.Summary, left.Summary, left.Evidence, left.Next)
+		result.Summary = leftText
+		if rightDone(rightText) {
+			result.Status = "owner_review"
+			return result, nil
+		}
+		feedback = rightText
 
 		next = clock.Now().Add(o.PollEvery)
 		if o.OnSchedule != nil {
@@ -390,6 +340,13 @@ Reply ONLY JSON: {"action":"continue|blocked|agree_review","summary":"work compl
 			}
 		}
 	}
+}
+
+func firstNonEmptyText(value, fallback string) string {
+	if strings.TrimSpace(value) != "" {
+		return strings.TrimSpace(value)
+	}
+	return fallback
 }
 
 func drainInstructions(ch <-chan string) string {

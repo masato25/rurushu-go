@@ -190,10 +190,10 @@ func TestDuelTUIRoutesFunctionKeysToAuxiliaryWorkspace(t *testing.T) {
 func TestDuelTUIRendersBothSides(t *testing.T) {
 	ui := newDuelUI(make(chan string, 4), make(chan duelUpdate, 4), func() {}, func() {}, "ses-left", "ses-right")
 	ui.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
-	ui.Update(duelUpdate{role: "right", round: 1, turn: duel.Turn{Action: "plan", Summary: "review", Evidence: "checked tests"}})
-	ui.Update(duelUpdate{role: "left", round: 1, turn: duel.Turn{Action: "continue", Summary: "implemented", Evidence: "tests pass"}})
+	ui.Update(duelUpdate{role: "right", round: 1, turn: duel.Turn{Action: "feedback", Summary: "review"}})
+	ui.Update(duelUpdate{role: "left", round: 1, turn: duel.Turn{Action: "work", Summary: "implemented"}})
 	view := ui.View().Content
-	for _, term := range []string{"執行者", "決策者", "ses-left", "ses-right", "review", "implemented"} {
+	for _, term := range []string{"主力執行", "短評回饋", "ses-left", "ses-right", "review", "implemented"} {
 		if !strings.Contains(view, term) {
 			t.Fatalf("missing %q in %s", term, view)
 		}

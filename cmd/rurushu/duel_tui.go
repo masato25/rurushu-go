@@ -316,6 +316,10 @@ func renderDuelTurn(update duelUpdate, width int) string {
 
 func duelActionColor(action string) string {
 	switch action {
+	case "work":
+		return "#6ED6AA"
+	case "feedback":
+		return "#75AFFF"
 	case "plan":
 		return "#75AFFF"
 	case "research":
@@ -358,8 +362,8 @@ func (m *duelUI) View() tea.View {
 	}
 	w := max(16, (m.width-3)/2)
 	headline := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#E6B450"))
-	leftTitle := " LEFT · 執行者 "
-	rightTitle := " RIGHT · 決策者 "
+	leftTitle := " LEFT · 主力執行 "
+	rightTitle := " RIGHT · 短評回饋 "
 	if m.leftID != "" {
 		leftTitle += "· " + m.leftID + " "
 	}

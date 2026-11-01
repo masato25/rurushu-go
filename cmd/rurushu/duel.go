@@ -26,6 +26,10 @@ type duelState struct {
 	Goal            string      `json:"goal"`
 	LeftID          string      `json:"left_session"`
 	RightID         string      `json:"right_session"`
+	LeftProvider    string      `json:"left_provider,omitempty"`
+	LeftModel       string      `json:"left_model,omitempty"`
+	RightProvider   string      `json:"right_provider,omitempty"`
+	RightModel      string      `json:"right_model,omitempty"`
 	Mode            string      `json:"mode,omitempty"`
 	PollEvery       string      `json:"poll_every,omitempty"`
 	StartedAt       time.Time   `json:"started_at,omitempty"`
@@ -38,6 +42,41 @@ type duelState struct {
 	Status          string      `json:"status"`
 	Summary         string      `json:"summary"`
 	LastError       string      `json:"last_error,omitempty"`
+}
+
+type duelRoleConfig struct {
+	Provider string
+	Model    string
+}
+
+func normalizeDuelRoleConfig(cfg duelRoleConfig) duelRoleConfig {
+	cfg.Provider = strings.ToLower(strings.TrimSpace(cfg.Provider))
+	if cfg.Provider == "" {
+		cfg.Provider = "cos"
+	}
+	if cfg.Provider == "chat-on-steroids" {
+		cfg.Provider = "cos"
+	}
+	if cfg.Provider == "openai" {
+		cfg.Provider = "openai-compatible"
+	}
+	cfg.Model = strings.TrimSpace(cfg.Model)
+	if cfg.Model == "" && cfg.Provider == "cos" {
+		cfg.Model = "chatgpt-web"
+	}
+	return cfg
+}
+
+func duelRoleConfigs(configs []duelRoleConfig) (duelRoleConfig, duelRoleConfig) {
+	left := duelRoleConfig{Provider: "cos", Model: "chatgpt-web"}
+	right := left
+	if len(configs) > 0 {
+		left = normalizeDuelRoleConfig(configs[0])
+	}
+	if len(configs) > 1 {
+		right = normalizeDuelRoleConfig(configs[1])
+	}
+	return left, right
 }
 
 type duelLockMeta struct {
@@ -213,34 +252,28 @@ func ensureRoundTime(state *duelState, round int, now time.Time) time.Time {
 }
 
 func recurringInitialSummary(state duelState) string {
-	if state.Mode == "recurring" && strings.TrimSpace(state.LastObservation) != "" {
-		return fmt.Sprintf("Last recurring action=%s. Observation: %s", state.LastAction, state.LastObservation)
+	if strings.TrimSpace(state.LastObservation) != "" {
+		return state.LastObservation
 	}
 	return state.Summary
 }
 
 func applyDuelTurnState(state *duelState, role string, turn duel.Turn) int {
 	shownRound := state.Rounds + 1
-	if state.Mode == "recurring" && role == "right" {
+	if role == "left" {
 		state.Rounds++
+		state.Summary = turn.Summary
+		return state.Rounds
+	}
+	if role == "right" {
 		state.LastAction = turn.Action
-		state.LastObservation = strings.TrimSpace(turn.Summary + " Evidence: " + turn.Evidence)
-		state.Summary = turn.Summary
-		return state.Rounds
-	}
-	if state.Mode != "recurring" && role == "left" {
-		state.Rounds++
-		state.Summary = turn.Summary
-		return state.Rounds
-	}
-	if state.Mode == "recurring" && role == "left" {
-		state.Summary = turn.Summary
+		state.LastObservation = strings.TrimSpace(turn.Summary)
 		return state.Rounds
 	}
 	return shownRound
 }
 
-func resolveDuelState(store *projectstate.Store, path, requestedGoal string, resume, newDuel bool) (duelState, bool, error) {
+func resolveDuelState(store *projectstate.Store, path, requestedGoal string, resume, newDuel bool, configs ...duelRoleConfig) (duelState, bool, error) {
 	if resume && newDuel {
 		return duelState{}, false, errors.New("--resume and --new cannot be combined")
 	}
@@ -279,39 +312,60 @@ func resolveDuelState(store *projectstate.Store, path, requestedGoal string, res
 	if requestedGoal == "" {
 		return duelState{}, false, errors.New("duel requires --goal or positional goal when starting a new duel")
 	}
-	left, err := store.StartSession("chatgpt-web", "cos")
+	leftCfg, rightCfg := duelRoleConfigs(configs)
+	if leftCfg.Model == "" || rightCfg.Model == "" {
+		return duelState{}, false, errors.New("left and right model are required")
+	}
+	left, err := store.StartSession(leftCfg.Model, leftCfg.Provider)
 	if err != nil {
 		return duelState{}, false, err
 	}
-	right, err := store.StartSession("chatgpt-web", "cos")
+	right, err := store.StartSession(rightCfg.Model, rightCfg.Provider)
 	if err != nil {
 		return duelState{}, false, err
 	}
-	state := duelState{Goal: requestedGoal, LeftID: left.ID, RightID: right.ID, Status: "running"}
+	state := duelState{Goal: requestedGoal, LeftID: left.ID, RightID: right.ID, LeftProvider: leftCfg.Provider, LeftModel: leftCfg.Model, RightProvider: rightCfg.Provider, RightModel: rightCfg.Model, Status: "running"}
 	if err = saveDuelState(path, state); err != nil {
 		return duelState{}, false, err
 	}
 	return state, false, nil
 }
 
-func createDuelState(store *projectstate.Store, path, goal string) (duelState, error) {
+func createDuelState(store *projectstate.Store, path, goal string, configs ...duelRoleConfig) (duelState, error) {
 	goal = strings.TrimSpace(goal)
 	if goal == "" {
 		return duelState{}, errors.New("duel goal is required")
 	}
-	left, err := store.StartSession("chatgpt-web", "cos")
+	leftCfg, rightCfg := duelRoleConfigs(configs)
+	if leftCfg.Model == "" || rightCfg.Model == "" {
+		return duelState{}, errors.New("left and right model are required")
+	}
+	left, err := store.StartSession(leftCfg.Model, leftCfg.Provider)
 	if err != nil {
 		return duelState{}, err
 	}
-	right, err := store.StartSession("chatgpt-web", "cos")
+	right, err := store.StartSession(rightCfg.Model, rightCfg.Provider)
 	if err != nil {
 		return duelState{}, err
 	}
-	state := duelState{Goal: goal, LeftID: left.ID, RightID: right.ID, Status: "running"}
+	state := duelState{Goal: goal, LeftID: left.ID, RightID: right.ID, LeftProvider: leftCfg.Provider, LeftModel: leftCfg.Model, RightProvider: rightCfg.Provider, RightModel: rightCfg.Model, Status: "running"}
 	if err := saveDuelState(path, state); err != nil {
 		return duelState{}, err
 	}
 	return state, nil
+}
+
+func newDuelProvider(cwd, name, baseURL, apiKey string) (provider.Provider, error) {
+	switch normalizeDuelRoleConfig(duelRoleConfig{Provider: name}).Provider {
+	case "cos":
+		p := provider.NewCOSProvider(cwd)
+		p.Stderr = nil
+		return p, nil
+	case "openai-compatible":
+		return provider.NewOpenAICompatibleProvider(strings.TrimSpace(baseURL), strings.TrimSpace(apiKey)), nil
+	default:
+		return nil, fmt.Errorf("unsupported duel provider %q", name)
+	}
 }
 
 func runDuel(args []string) error {
@@ -320,7 +374,13 @@ func runDuel(args []string) error {
 	cwdDefault, _ := os.Getwd()
 	cwd := fs.String("cwd", cwdDefault, "project directory")
 	goal := fs.String("goal", "", "task goal for both agents")
-	resume := fs.Bool("resume", false, "resume existing left/right COS sessions")
+	leftProviderName := fs.String("left-provider", firstNonEmpty(os.Getenv("RURUSHU_LEFT_PROVIDER"), os.Getenv("RURUSHU_PROVIDER"), "cos"), "LEFT provider: cos or openai-compatible")
+	leftModelName := fs.String("left-model", firstNonEmpty(os.Getenv("RURUSHU_LEFT_MODEL"), os.Getenv("RURUSHU_MODEL")), "LEFT model (COS defaults to chatgpt-web)")
+	rightProviderName := fs.String("right-provider", firstNonEmpty(os.Getenv("RURUSHU_RIGHT_PROVIDER"), os.Getenv("RURUSHU_PROVIDER"), "cos"), "RIGHT provider: cos or openai-compatible")
+	rightModelName := fs.String("right-model", firstNonEmpty(os.Getenv("RURUSHU_RIGHT_MODEL"), os.Getenv("RURUSHU_MODEL")), "RIGHT model (COS defaults to chatgpt-web)")
+	baseURL := fs.String("base-url", firstNonEmpty(os.Getenv("RURUSHU_BASE_URL"), os.Getenv("OPENAI_BASE_URL"), "https://api.openai.com/v1"), "OpenAI-compatible API base URL used by duel roles")
+	apiKey := fs.String("api-key", firstNonEmpty(os.Getenv("RURUSHU_API_KEY"), os.Getenv("OPENAI_API_KEY")), "OpenAI-compatible API key used by duel roles")
+	resume := fs.Bool("resume", false, "resume existing LEFT/RIGHT sessions")
 	newDuel := fs.Bool("new", false, "start a new duel with a fresh LEFT/RIGHT session pair")
 	runFor := fs.Duration("run-for", 0, "run a recurring duel for this duration (for example 10m)")
 	pollEvery := fs.Duration("poll-every", 30*time.Second, "recurring duel interval (for example 30s)")
@@ -331,13 +391,14 @@ func runDuel(args []string) error {
 
 Recurring duel:
   --run-for is the total lifetime of the recurring run.
-  --poll-every is how often RIGHT wakes up to observe the latest state again.
+  --poll-every is how often the next LEFT work round starts.
 
-  On each poll RIGHT decides what happens next:
-    wait            no useful LEFT work yet; keep observing on the next poll
-    plan/research   hand a concrete task to LEFT, then schedule the next poll
-    blocked         stop because owner/manual/secret intervention is required
-    propose_review  stop because the goal appears ready for owner review
+Conversation model:
+  LEFT is the primary worker and runs first, like a normal single chat.
+  RIGHT receives LEFT's final response and replies with at most 100 characters.
+  That short RIGHT reply is fed back to LEFT for the next work round.
+  LEFT and RIGHT may use different providers and models.
+  RIGHT can prefix a reply with DONE: when the task is ready for owner review.
 
 Example:
   rurushu duel --new \
@@ -397,6 +458,11 @@ Options:`)
 	defer lock.Release()
 	path := filepath.Join(store.Dir, "duel-state.json")
 	requestedGoal := strings.TrimSpace(*goal)
+	leftCfg := normalizeDuelRoleConfig(duelRoleConfig{Provider: *leftProviderName, Model: *leftModelName})
+	rightCfg := normalizeDuelRoleConfig(duelRoleConfig{Provider: *rightProviderName, Model: *rightModelName})
+	if leftCfg.Model == "" || rightCfg.Model == "" {
+		return errors.New("--left-model and --right-model are required for non-COS providers")
+	}
 	if requestedGoal == "" {
 		requestedGoal = strings.TrimSpace(strings.Join(fs.Args(), " "))
 	}
@@ -411,7 +477,7 @@ Options:`)
 		}
 	}
 	if !waitingForGoal {
-		state, reused, err = resolveDuelState(store, path, requestedGoal, *resume, *newDuel)
+		state, reused, err = resolveDuelState(store, path, requestedGoal, *resume, *newDuel, leftCfg, rightCfg)
 		if err != nil {
 			return err
 		}
@@ -443,12 +509,22 @@ Options:`)
 			return err
 		}
 	}
-	if strings.TrimSpace(os.Getenv("COS_SESSION_ID")) != "" {
+	if (state.LeftProvider == "cos" || state.RightProvider == "cos" || waitingForGoal) && strings.TrimSpace(os.Getenv("COS_SESSION_ID")) != "" {
 		return errors.New("unset COS_SESSION_ID for duel: each role requires its own remote session")
 	}
-	p := provider.NewCOSProvider(abs)
-	// Bubble Tea owns the terminal; COS diagnostics must not write to stderr.
-	p.Stderr = nil
+	activeLeftCfg, activeRightCfg := leftCfg, rightCfg
+	if !waitingForGoal {
+		activeLeftCfg = normalizeDuelRoleConfig(duelRoleConfig{Provider: state.LeftProvider, Model: state.LeftModel})
+		activeRightCfg = normalizeDuelRoleConfig(duelRoleConfig{Provider: state.RightProvider, Model: state.RightModel})
+	}
+	leftProvider, err := newDuelProvider(abs, activeLeftCfg.Provider, *baseURL, *apiKey)
+	if err != nil {
+		return err
+	}
+	rightProvider, err := newDuelProvider(abs, activeRightCfg.Provider, *baseURL, *apiKey)
+	if err != nil {
+		return err
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	terminalService := tuiPkg.NewTerminalService(abs)
@@ -460,7 +536,8 @@ Options:`)
 		stateMu.Lock()
 		runGoal, runLeftID, runRightID, runSummary := state.Goal, state.LeftID, state.RightID, recurringInitialSummary(state)
 		stateMu.Unlock()
-		baseOptions := duel.Options{Goal: runGoal, LeftID: runLeftID, RightID: runRightID, InitialSummary: runSummary, Instructions: instructions, RetryDelay: time.Minute, GoalFunc: func() string {
+		runLeftModel, runRightModel := activeLeftCfg.Model, activeRightCfg.Model
+		baseOptions := duel.Options{Goal: runGoal, LeftID: runLeftID, RightID: runRightID, LeftModel: runLeftModel, RightModel: runRightModel, LeftStreamer: leftProvider, RightStreamer: rightProvider, InitialSummary: runSummary, Instructions: instructions, RetryDelay: time.Minute, GoalFunc: func() string {
 			stateMu.Lock()
 			defer stateMu.Unlock()
 			return state.Goal
@@ -499,7 +576,7 @@ Options:`)
 				}
 				err = fmt.Errorf("invalid persisted recurring poll interval %q: %w", pollEveryText, parseErr)
 			} else {
-				result, err = duel.RunRecurring(ctx, p, duel.RecurringOptions{
+				result, err = duel.RunRecurring(ctx, nil, duel.RecurringOptions{
 					Options:    baseOptions,
 					PollEvery:  interval,
 					Deadline:   deadline,
@@ -513,7 +590,7 @@ Options:`)
 				})
 			}
 		} else {
-			result, err = duel.Run(ctx, p, baseOptions)
+			result, err = duel.Run(ctx, nil, baseOptions)
 		}
 		stateMu.Lock()
 		applyDuelResult(&state, result, err)
@@ -538,7 +615,12 @@ Options:`)
 	newRoleSession := func(role string) (string, error) {
 		stateMu.Lock()
 		defer stateMu.Unlock()
-		session, createErr := store.StartSession("chatgpt-web", "cos")
+		cfg := duelRoleConfig{Provider: state.LeftProvider, Model: state.LeftModel}
+		if role == "right" {
+			cfg = duelRoleConfig{Provider: state.RightProvider, Model: state.RightModel}
+		}
+		cfg = normalizeDuelRoleConfig(cfg)
+		session, createErr := store.StartSession(cfg.Model, cfg.Provider)
 		if createErr != nil {
 			return "", createErr
 		}
@@ -576,7 +658,7 @@ Options:`)
 	ui.setNewSessionHandler(newRoleSession)
 	if waitingForGoal {
 		ui.setInitialGoalHandler(func(goal string) error {
-			created, createErr := createDuelState(store, path, goal)
+			created, createErr := createDuelState(store, path, goal, leftCfg, rightCfg)
 			if createErr != nil {
 				return createErr
 			}

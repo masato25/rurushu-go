@@ -50,9 +50,12 @@ func TestDuelHelpExplainsRecurringLifecycle(t *testing.T) {
 	for _, want := range []string{
 		"Recurring duel:",
 		"--run-for is the total lifetime",
-		"--poll-every is how often RIGHT wakes up",
-		"wait            no useful LEFT work yet",
-		"plan/research",
+		"LEFT is the primary worker and runs first",
+		"at most 100 characters",
+		"different providers and models",
+		"DONE:",
+		"-left-provider",
+		"-right-model",
 		"rurushu duel --new",
 		"rurushu duel --resume",
 		"never shorten",
@@ -239,6 +242,39 @@ func TestResolveDuelStateNewCreatesFreshPair(t *testing.T) {
 	}
 }
 
+func TestResolveDuelStateCreatesIndependentProviderModelSessions(t *testing.T) {
+	dir := t.TempDir()
+	store, err := projectstate.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(store.Dir, "duel-state.json")
+	got, reused, err := resolveDuelState(store, path, "mixed backends", false, true,
+		duelRoleConfig{Provider: "cos", Model: "left-model"},
+		duelRoleConfig{Provider: "openai-compatible", Model: "right-model"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reused {
+		t.Fatal("new duel unexpectedly reused state")
+	}
+	if got.LeftProvider != "cos" || got.LeftModel != "left-model" || got.RightProvider != "openai-compatible" || got.RightModel != "right-model" {
+		t.Fatalf("state role config=%+v", got)
+	}
+	left, err := store.LoadSession(got.LeftID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	right, err := store.LoadSession(got.RightID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if left.Provider != "cos" || left.Model != "left-model" || right.Provider != "openai-compatible" || right.Model != "right-model" {
+		t.Fatalf("sessions left=%+v right=%+v", left, right)
+	}
+}
+
 func TestResolveDuelStateRejectsResumeAndNew(t *testing.T) {
 	store, err := projectstate.Open(t.TempDir())
 	if err != nil {
@@ -373,27 +409,20 @@ func TestRecurringInitialSummaryIncludesPersistedObservation(t *testing.T) {
 		LastObservation: "executor attempts=0 Evidence: arm window expired",
 	}
 	got := recurringInitialSummary(state)
-	if !strings.Contains(got, "action=wait") || !strings.Contains(got, "attempts=0") || !strings.Contains(got, "arm window expired") {
+	if !strings.Contains(got, "attempts=0") || !strings.Contains(got, "arm window expired") {
 		t.Fatalf("resume summary lost recurring observation: %q", got)
 	}
 }
 
-func TestApplyDuelTurnStateRecurringCountsRightTickAndPersistsObservation(t *testing.T) {
+func TestApplyDuelTurnStateCountsLeftAndPersistsRightFeedback(t *testing.T) {
 	state := duelState{Mode: "recurring", Rounds: 4}
-	shown := applyDuelTurnState(&state, "right", duel.Turn{
-		Action:   "wait",
-		Summary:  "observer has no READY_TO_SEND",
-		Evidence: "preflight still running",
-	})
-	if shown != 5 || state.Rounds != 5 || state.LastAction != "wait" {
-		t.Fatalf("state=%+v shown=%d", state, shown)
+	shown := applyDuelTurnState(&state, "left", duel.Turn{Action: "work", Summary: "executor checked"})
+	if shown != 5 || state.Rounds != 5 || state.Summary != "executor checked" {
+		t.Fatalf("left state=%+v shown=%d", state, shown)
 	}
-	if !strings.Contains(state.LastObservation, "no READY_TO_SEND") || !strings.Contains(state.LastObservation, "preflight still running") {
-		t.Fatalf("observation=%q", state.LastObservation)
-	}
-	shown = applyDuelTurnState(&state, "left", duel.Turn{Action: "continue", Summary: "executor started"})
-	if shown != 5 || state.Rounds != 5 || state.Summary != "executor started" {
-		t.Fatalf("LEFT should not double-count recurring tick: state=%+v shown=%d", state, shown)
+	shown = applyDuelTurnState(&state, "right", duel.Turn{Action: "feedback", Summary: "再檢查 gas"})
+	if shown != 5 || state.Rounds != 5 || state.LastAction != "feedback" || state.LastObservation != "再檢查 gas" {
+		t.Fatalf("right state=%+v shown=%d", state, shown)
 	}
 }
 
