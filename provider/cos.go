@@ -215,6 +215,18 @@ func (p *COSProvider) runStreamSelected(ctx context.Context, out chan<- StreamEv
 			if err == nil && status >= 200 && status < 300 {
 				break
 			}
+			if status == http.StatusTooManyRequests {
+				busy, stage, stateErr := p.handoffBusy(ctx, baseURL, token, sessionID)
+				if stateErr == nil && busy {
+					p.logf("COS input paused while Compact & Resume is %s; waiting for handoff completion\n", stage)
+					if waitErr := p.waitForHandoff(ctx, baseURL, token, sessionID); waitErr != nil {
+						p.emitError(out, waitErr)
+						return
+					}
+					inputID = randomID()
+					continue
+				}
+			}
 			if status != http.StatusConflict || !strings.Contains(body, "would_interrupt") {
 				p.emitError(out, fmt.Errorf("Chat On Steroids input error (%d): %s", status, strings.TrimSpace(body)))
 				return
@@ -408,20 +420,12 @@ func (p *COSProvider) waitForHandoff(ctx context.Context, baseURL, token, sessio
 	deadline := time.NewTimer(10 * time.Minute)
 	defer deadline.Stop()
 	for {
-		var state struct {
-			Live *struct {
-				Job *struct {
-					Stage string `json:"stage"`
-					Busy  bool   `json:"busy"`
-				} `json:"job"`
-			} `json:"live"`
-		}
-		err := p.getJSON(ctx, baseURL+"/v1/sessions/"+url.PathEscape(sessionID)+"?live=1", token, &state)
+		busy, stage, err := p.handoffBusy(ctx, baseURL, token, sessionID)
 		if err != nil {
 			return fmt.Errorf("cannot verify COS handoff state; refusing unverified send: %w", err)
 		}
-		if state.Live == nil || state.Live.Job == nil || !state.Live.Job.Busy {
-			if state.Live != nil && state.Live.Job != nil && state.Live.Job.Stage == "failed" {
+		if !busy {
+			if stage == "failed" {
 				return errors.New("COS Compact & Resume failed; refusing automatic replay")
 			}
 			return nil
@@ -434,6 +438,25 @@ func (p *COSProvider) waitForHandoff(ctx context.Context, baseURL, token, sessio
 		case <-time.After(p.handoffDelay()):
 		}
 	}
+}
+
+func (p *COSProvider) handoffBusy(ctx context.Context, baseURL, token, sessionID string) (bool, string, error) {
+	var state struct {
+		Live *struct {
+			Job *struct {
+				Stage string `json:"stage"`
+				Busy  bool   `json:"busy"`
+			} `json:"job"`
+		} `json:"live"`
+	}
+	err := p.getJSON(ctx, baseURL+"/v1/sessions/"+url.PathEscape(sessionID)+"?live=1", token, &state)
+	if err != nil {
+		return false, "", err
+	}
+	if state.Live == nil || state.Live.Job == nil {
+		return false, "", nil
+	}
+	return state.Live.Job.Busy, state.Live.Job.Stage, nil
 }
 
 func (p *COSProvider) emitError(out chan<- StreamEvent, err error) {

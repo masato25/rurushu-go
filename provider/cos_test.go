@@ -87,6 +87,39 @@ func TestCOSWaitForHandoffRespectsCancellation(t *testing.T) {
 	}
 }
 
+func TestCOSHandoffBusyReportsCompactionState(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/sessions/cos-left" || r.URL.Query().Get("live") != "1" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
+		}
+		_, _ = w.Write([]byte(`{"live":{"job":{"stage":"waiting-for-browser","busy":true}}}`))
+	}))
+	defer server.Close()
+	p := fastCOSProvider(server.Client())
+	busy, stage, err := p.handoffBusy(context.Background(), server.URL, "token", "cos-left")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !busy || stage != "waiting-for-browser" {
+		t.Fatalf("busy=%v stage=%q", busy, stage)
+	}
+}
+
+func TestCOSHandoffBusyDoesNotMistakeIdleSessionForCompaction(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"live":{"job":{"stage":"done","busy":false}}}`))
+	}))
+	defer server.Close()
+	p := fastCOSProvider(server.Client())
+	busy, stage, err := p.handoffBusy(context.Background(), server.URL, "token", "cos-left")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if busy || stage != "done" {
+		t.Fatalf("busy=%v stage=%q", busy, stage)
+	}
+}
+
 func TestCOSTurnStillActiveRequiresMatchingLiveTurn(t *testing.T) {
 	active := "turn-left"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -329,6 +362,79 @@ func TestCorrelateCOSTurn(t *testing.T) {
 	}
 	if got := correlateCOSTurn(events, "ours", false); got != "right" {
 		t.Fatalf("turn = %q, want right", got)
+	}
+}
+
+func TestCOSSingleStreamWaitsForCompactionAfterInputRateLimit(t *testing.T) {
+	var inputPosts atomic.Int32
+	var liveReads atomic.Int32
+	var inputID string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/sessions/session-1" && r.URL.Query().Get("live") == "1":
+			n := liveReads.Add(1)
+			// Initial pre-submit check is idle. The 429 follow-up check and first
+			// wait poll report the compaction; the next poll reports completion.
+			if n == 2 || n == 3 {
+				_ = json.NewEncoder(w).Encode(map[string]any{"live": map[string]any{"job": map[string]any{"stage": "waiting-for-browser", "busy": true}}})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"live": map[string]any{"job": map[string]any{"stage": "done", "busy": false}}})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/inputs":
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			inputID, _ = body["id"].(string)
+			if inputPosts.Add(1) == 1 {
+				w.WriteHeader(http.StatusTooManyRequests)
+				_, _ = w.Write([]byte(`{"error":"rate_limited"}`))
+				return
+			}
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/sessions/session-1/events":
+			if r.URL.Query().Get("limit") == "1" {
+				_ = json.NewEncoder(w).Encode(map[string]any{"nextFrom": 0, "events": []any{}})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"nextFrom": 5,
+				"events": []map[string]any{
+					{"seq": 1, "kind": "user_message", "inputId": inputID},
+					{"seq": 2, "kind": "turn_start", "turnId": "turn-1"},
+					{"seq": 3, "kind": "assistant_message", "turnId": "turn-1", "messageId": "answer", "message": map[string]any{"text": "continued after compaction"}, "final": true},
+					{"seq": 4, "kind": "turn_end", "turnId": "turn-1"},
+				},
+			})
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	p := fastCOSProvider(server.Client())
+	out := make(chan StreamEvent)
+	go p.runStream(ctx, out, server.URL, "token", "session-1", "continue work", false)
+	var last string
+	done := false
+	for ev := range out {
+		switch ev.Type {
+		case EventReplace:
+			last = ev.Text
+		case EventDone:
+			done = true
+		case EventError:
+			t.Fatalf("single stream failed during compaction recovery: %v", ev.Error)
+		}
+	}
+	if !done || last != "continued after compaction" {
+		t.Fatalf("done=%v response=%q", done, last)
+	}
+	if got := inputPosts.Load(); got != 2 {
+		t.Fatalf("input posts=%d, want initial 429 plus one replay", got)
 	}
 }
 
