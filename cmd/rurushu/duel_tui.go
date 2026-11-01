@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -38,6 +39,7 @@ type duelUI struct {
 	updates         chan duelUpdate
 	run             func()
 	cancel          context.CancelFunc
+	stopLoop        func()
 	stopped         bool
 	status          string
 	leftID, rightID string
@@ -48,6 +50,7 @@ type duelUI struct {
 	waitingForGoal  bool
 	slashMatches    []tui.SlashCommand
 	slashMatchIndex int
+	switchMode      string
 }
 
 type duelModalLayout struct {
@@ -83,6 +86,7 @@ func newDuelUI(instructions chan string, updates chan duelUpdate, run func(), ca
 
 func (m *duelUI) setAuxiliaryWorkspace(aux *tui.AuxiliaryWorkspace)      { m.aux = aux }
 func (m *duelUI) setNewSessionHandler(fn func() (string, string, error)) { m.newSessions = fn }
+func (m *duelUI) setStopLoopHandler(fn func())                           { m.stopLoop = fn }
 func (m *duelUI) setInitialGoalHandler(fn func(goal string) error) {
 	m.setInitialGoal = fn
 	m.waitingForGoal = true
@@ -95,7 +99,7 @@ func (m *duelUI) Init() tea.Cmd {
 	if m.waitingForGoal {
 		return m.input.Focus()
 	}
-	go m.run()
+	m.run()
 	return tea.Batch(m.input.Focus(), awaitDuelUpdate(m.updates))
 }
 func (m *duelUI) Update(message tea.Msg) (tea.Model, tea.Cmd) {
@@ -126,7 +130,9 @@ func (m *duelUI) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			// Use Bubble Tea's raw terminal output to avoid corrupting the TUI.
 			alert := v.err == nil && v.result.Status == "owner_review" && !m.stopped
 			m.stopped = true
-			if v.err != nil {
+			if errors.Is(v.err, context.Canceled) {
+				m.status = "LEFT/RIGHT loop 已停止 · 可用 /retry 或 Ctrl+R 重新啟動"
+			} else if v.err != nil {
 				m.status = "停止：" + v.err.Error() + " · 可直接輸入指令或按 Ctrl+R 重試"
 			} else if v.result.Status == "blocked" {
 				m.status = "等待外部條件 · 可輸入主人指令繼續"
@@ -238,7 +244,7 @@ func (m *duelUI) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 					m.stopped = false
 					m.input.Placeholder = "主人輸入指令；思考中也可 Enter 預排，完成後自動接續"
 					m.status = "已設定 goal，開始左右互搏"
-					go m.run()
+					m.run()
 					return m, awaitDuelUpdate(m.updates)
 				}
 				if isDuelNewSessionCommand(note) {
@@ -261,7 +267,7 @@ func (m *duelUI) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 					m.rightID = rightID
 					m.stopped = false
 					m.status = "已建立新的 LEFT/RIGHT sessions，接續目前 duel"
-					go m.run()
+					m.run()
 					return m, awaitDuelUpdate(m.updates)
 				}
 				select {
@@ -276,7 +282,7 @@ func (m *duelUI) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				if m.stopped {
 					m.stopped = false
 					m.status = "重試左右互搏中"
-					go m.run()
+					m.run()
 					return m, awaitDuelUpdate(m.updates)
 				}
 			}
@@ -285,7 +291,7 @@ func (m *duelUI) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			if m.stopped {
 				m.stopped = false
 				m.status = "重試左右互搏中"
-				go m.run()
+				m.run()
 				return m, awaitDuelUpdate(m.updates)
 			}
 		case "pgup", "pgdown", "home", "end":
@@ -327,6 +333,8 @@ func duelSlashCommands() []tui.SlashCommand {
 		{Name: "help", Usage: "/help", Description: "show available duel commands"},
 		{Name: "new", Usage: "/new", Description: "replace both LEFT/RIGHT sessions after duel stops"},
 		{Name: "retry", Usage: "/retry", Description: "retry a stopped duel (same as Ctrl+R)"},
+		{Name: "single", Usage: "/single", Description: "stop duel and switch to single chat mode"},
+		{Name: "stop", Usage: "/stop", Description: "stop the LEFT/RIGHT loop but keep the duel TUI open"},
 	}
 }
 
@@ -463,8 +471,25 @@ func (m *duelUI) runSlashCommand(input string) (bool, tea.Cmd) {
 		}
 		m.stopped = false
 		m.status = "重試左右互搏中"
-		go m.run()
+		m.run()
 		return true, awaitDuelUpdate(m.updates)
+	case "stop":
+		if m.stopped {
+			m.status = "duel loop 已停止"
+			return true, m.input.Focus()
+		}
+		if m.stopLoop != nil {
+			m.stopLoop()
+		}
+		m.status = "正在停止 LEFT/RIGHT loop…"
+		return true, awaitDuelUpdate(m.updates)
+	case "single":
+		if m.stopLoop != nil {
+			m.stopLoop()
+		}
+		m.switchMode = "single"
+		m.status = "切換到 single chat"
+		return true, tea.Quit
 	default:
 		m.status = "未知 slash command：/" + query + " · 輸入 /help 查看可用指令"
 		return true, m.input.Focus()

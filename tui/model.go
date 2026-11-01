@@ -44,6 +44,7 @@ type Model struct {
 	lastTranscriptRender time.Time
 	transcriptDirty      bool
 	reloadRequested      bool
+	modeSwitchRequested  string
 	width                int
 	height               int
 
@@ -100,7 +101,8 @@ type Model struct {
 	watchFileSize       int64
 }
 
-func (m *Model) ReloadRequested() bool { return m.reloadRequested }
+func (m *Model) ReloadRequested() bool       { return m.reloadRequested }
+func (m *Model) ModeSwitchRequested() string { return m.modeSwitchRequested }
 
 type streamStartedMsg struct {
 	id     uint64

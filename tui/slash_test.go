@@ -50,10 +50,23 @@ func TestDefaultSlashHelpIsLocal(t *testing.T) {
 		t.Fatalf("messages=%d, want 2", len(m.messages))
 	}
 	output := m.messages[1].Content
-	for _, want := range []string{"/clear", "/exit", "/help", "Autocomplete:", "//text"} {
+	for _, want := range []string{"/clear", "/duel", "/exit", "/help", "Autocomplete:", "//text"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("help output missing %q: %q", want, output)
 		}
+	}
+}
+
+func TestDuelSlashRequestsModeSwitch(t *testing.T) {
+	m := New("test-model", "test-provider")
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	cmd := submitSlashTest(t, m, "/duel")
+	if cmd == nil {
+		t.Fatal("/duel did not quit the single TUI")
+	}
+	if got := m.ModeSwitchRequested(); got != "duel" {
+		t.Fatalf("mode switch=%q", got)
 	}
 }
 

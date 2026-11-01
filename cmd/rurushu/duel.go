@@ -546,14 +546,16 @@ Options:`)
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	terminalService := tuiPkg.NewTerminalService(abs)
 	defer terminalService.Close()
 	var stateMu sync.Mutex
+	var runMu sync.Mutex
+	var runCancel context.CancelFunc
+	var runDone chan struct{}
+	var runGeneration uint64
 	instructions := make(chan string, 128)
 	updates := make(chan duelUpdate, 128)
-	run := func() {
+	executeRun := func(ctx context.Context, generation uint64) {
 		stateMu.Lock()
 		runGoal, runLeftID, runRightID, runSummary := state.Goal, state.LeftID, state.RightID, recurringInitialSummary(state)
 		stateMu.Unlock()
@@ -629,13 +631,54 @@ Options:`)
 			err = saveErr
 		}
 		stateMu.Unlock()
-		select {
-		case updates <- duelUpdate{done: true, err: err, result: result}:
-		case <-ctx.Done():
+		runMu.Lock()
+		if runGeneration == generation {
+			runCancel = nil
+		}
+		runMu.Unlock()
+		updates <- duelUpdate{done: true, err: err, result: result}
+	}
+	run := func() {
+		runMu.Lock()
+		if runCancel != nil {
+			runMu.Unlock()
+			return
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		runGeneration++
+		generation := runGeneration
+		done := make(chan struct{})
+		runCancel = cancel
+		runDone = done
+		runMu.Unlock()
+		go func() {
+			executeRun(ctx, generation)
+			close(done)
+			runMu.Lock()
+			if runGeneration == generation {
+				runDone = nil
+			}
+			runMu.Unlock()
+		}()
+	}
+	cancelCurrentRun := func() {
+		runMu.Lock()
+		cancel := runCancel
+		runMu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
+	}
+	waitCurrentRun := func() {
+		runMu.Lock()
+		done := runDone
+		runMu.Unlock()
+		if done != nil {
+			<-done
 		}
 	}
 	cancelAndPersist := func() {
-		cancel()
+		cancelCurrentRun()
 		stateMu.Lock()
 		defer stateMu.Unlock()
 		if state.Status == "running" {
@@ -682,6 +725,7 @@ Options:`)
 	}
 	ui.setAuxiliaryWorkspace(aux)
 	ui.setNewSessionHandler(newDuelSessions)
+	ui.setStopLoopHandler(cancelCurrentRun)
 	if waitingForGoal {
 		ui.setInitialGoalHandler(func(goal string) error {
 			created, createErr := createDuelState(store, path, goal, leftCfg, rightCfg)
@@ -707,7 +751,15 @@ Options:`)
 		})
 	}
 	_, err = tea.NewProgram(ui).Run()
-	return err
+	cancelCurrentRun()
+	waitCurrentRun()
+	if err != nil {
+		return err
+	}
+	if ui.switchMode == "single" {
+		return &modeSwitchError{Mode: "single", CWD: abs}
+	}
+	return nil
 }
 
 func updateRecurringSchedule(state *duelState, now time.Time, runFor time.Duration, runForSet bool, pollEvery time.Duration, pollEverySet bool) error {

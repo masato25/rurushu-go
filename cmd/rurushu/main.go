@@ -48,14 +48,42 @@ func main() {
 }
 
 func run(args []string) error {
+	current := append([]string(nil), args...)
+	for {
+		var err error
+		if len(current) > 0 && current[0] == "duel" {
+			err = runDuel(current[1:])
+		} else {
+			err = runSingle(current)
+		}
+		var switchErr *modeSwitchError
+		if !errors.As(err, &switchErr) {
+			return err
+		}
+		switch switchErr.Mode {
+		case "single":
+			current = []string{"--cwd", switchErr.CWD}
+		case "duel":
+			current = []string{"duel", "--cwd", switchErr.CWD}
+		default:
+			return err
+		}
+	}
+}
+
+type modeSwitchError struct {
+	Mode string
+	CWD  string
+}
+
+func (e *modeSwitchError) Error() string { return "switch mode to " + e.Mode }
+
+func runSingle(args []string) error {
 	if len(args) > 0 && args[0] == "--init" {
 		return runInit(args[1:])
 	}
 	if len(args) > 0 && args[0] == "handoff" {
 		return runHandoff(args[1:])
-	}
-	if len(args) > 0 && args[0] == "duel" {
-		return runDuel(args[1:])
 	}
 	if len(args) > 0 && args[0] == "__job-runner" {
 		return runJobRunner(args[1:])
@@ -245,6 +273,9 @@ func run(args []string) error {
 	}
 	if uiModel.ReloadRequested() {
 		return rebuildAndReload(args, uiModel.SessionID())
+	}
+	if uiModel.ModeSwitchRequested() == "duel" {
+		return &modeSwitchError{Mode: "duel", CWD: absCWD}
 	}
 	return nil
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -107,6 +108,51 @@ func TestDuelSlashAutocompleteNavigationAndTab(t *testing.T) {
 	ui.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 	if got := ui.input.Value(); got != want {
 		t.Fatalf("tab completion=%q want=%q", got, want)
+	}
+}
+
+func TestDuelStopSlashCancelsLoopWithoutQuitting(t *testing.T) {
+	stops := 0
+	ui := newDuelUI(make(chan string, 4), make(chan duelUpdate, 4), func() {}, func() {})
+	ui.setStopLoopHandler(func() { stops++ })
+	ui.input.SetValue("/stop")
+	_, cmd := ui.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("/stop should keep waiting for the run completion update")
+	}
+	if stops != 1 {
+		t.Fatalf("stop handler calls=%d", stops)
+	}
+	if ui.switchMode != "" {
+		t.Fatalf("/stop unexpectedly switched mode: %q", ui.switchMode)
+	}
+	if !strings.Contains(ui.status, "正在停止") {
+		t.Fatalf("status=%q", ui.status)
+	}
+}
+
+func TestDuelSingleSlashStopsLoopAndRequestsModeSwitch(t *testing.T) {
+	stops := 0
+	ui := newDuelUI(make(chan string, 4), make(chan duelUpdate, 4), func() {}, func() {})
+	ui.setStopLoopHandler(func() { stops++ })
+	ui.input.SetValue("/single")
+	_, cmd := ui.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("/single did not request TUI quit")
+	}
+	if stops != 1 {
+		t.Fatalf("stop handler calls=%d", stops)
+	}
+	if ui.switchMode != "single" {
+		t.Fatalf("switch mode=%q", ui.switchMode)
+	}
+}
+
+func TestDuelCanceledRunShowsStoppedLoopStatus(t *testing.T) {
+	ui := newDuelUI(make(chan string, 4), make(chan duelUpdate, 4), func() {}, func() {})
+	ui.Update(duelUpdate{done: true, err: context.Canceled})
+	if !ui.stopped || !strings.Contains(ui.status, "loop 已停止") {
+		t.Fatalf("stopped=%v status=%q", ui.stopped, ui.status)
 	}
 }
 

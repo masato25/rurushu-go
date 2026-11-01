@@ -24,6 +24,7 @@ type SlashCommandResult struct {
 	Output       string
 	ClearSession bool
 	Quit         bool
+	SwitchMode   string
 	picker       *selectionPicker
 	cmd          tea.Cmd
 }
@@ -75,6 +76,20 @@ func (m *Model) registerDefaultSlashCommands() {
 			},
 		})
 	}
+	_ = m.RegisterSlashCommand(SlashCommand{
+		Name:        "duel",
+		Usage:       "/duel",
+		Description: "switch from single chat to duel mode",
+		Run: func(args string) (SlashCommandResult, error) {
+			if strings.TrimSpace(args) != "" {
+				return SlashCommandResult{}, fmt.Errorf("/duel does not accept arguments")
+			}
+			if m.streaming {
+				return SlashCommandResult{}, fmt.Errorf("wait for the active response to finish before switching to duel mode")
+			}
+			return SlashCommandResult{SwitchMode: "duel", Quit: true}, nil
+		},
+	})
 	_ = m.RegisterSlashCommand(SlashCommand{
 		Name:        "help",
 		Usage:       "/help",
@@ -331,6 +346,7 @@ func (m *Model) runSlashCommand(input string) (bool, tea.Cmd) {
 		m.persistSessionWithWarning()
 	}
 	if result.Quit {
+		m.modeSwitchRequested = strings.TrimSpace(result.SwitchMode)
 		return true, tea.Quit
 	}
 	if result.ClearSession {
