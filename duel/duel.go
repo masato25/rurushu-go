@@ -225,15 +225,13 @@ Do the useful work now. Do not wait for RIGHT to make a plan for you. Your final
 			}
 		}
 
-		ownerNotes = strings.TrimSpace(ownerNotes + "\n" + drainInstructions(o.Instructions))
 		goal = currentGoal(o)
 		rightPrompt := fmt.Sprintf(`You are RIGHT, a lightweight reviewer/coach. LEFT is the primary agent and has just completed a work round.
 Goal: %s
-Owner instructions: %s
 LEFT's final response:
 %s
 
-Reply directly to LEFT with only the most useful reaction, correction, question, or suggestion for what it should do next. Do not take over planning or execution. Keep the entire reply within 100 Unicode characters. No JSON, no markdown wrapper. If the task is genuinely ready for owner review, begin with "DONE:" and briefly say why.`, goal, ownerNotes, leftText)
+Reply directly to LEFT with only the most useful reaction, correction, question, or suggestion for what it should do next. Do not take over planning or execution. Keep the entire reply within 100 Unicode characters. No JSON, no markdown wrapper. If the task is genuinely ready for owner review, begin with "DONE:" and briefly say why.`, goal, leftText)
 		rightMaxTokens := 96
 		rightText, err := callTextWithRetry(ctx, rightStreamer, o.RightID, roleModel(o.RightModel), rightPrompt, "right", round, &rightMaxTokens, o)
 		if err != nil {
@@ -328,15 +326,13 @@ Use tools and perform useful work. Return a normal concise final work report; no
 			}
 		}
 
-		ownerNotes = strings.TrimSpace(ownerNotes + "\n" + drainInstructions(o.Instructions))
 		goal = currentGoal(o.Options)
 		rightPrompt := fmt.Sprintf(`You are RIGHT, a lightweight reviewer/coach. LEFT is the primary agent.
 Goal: %s
-Owner instructions: %s
 LEFT's final response:
 %s
 
-Reply directly to LEFT with the single most useful reaction/correction/suggestion. Do not take over execution. Maximum 100 Unicode characters. No JSON. If ready for owner review, begin with "DONE:".`, goal, ownerNotes, leftText)
+Reply directly to LEFT with the single most useful reaction/correction/suggestion. Do not take over execution. Maximum 100 Unicode characters. No JSON. If ready for owner review, begin with "DONE:".`, goal, leftText)
 		rightMaxTokens := 96
 		rightText, err := callTextWithRetry(ctx, rightStreamer, o.RightID, roleModel(o.RightModel), rightPrompt, "right", round, &rightMaxTokens, o.Options)
 		if err != nil {

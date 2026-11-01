@@ -205,6 +205,29 @@ func TestRunInjectsOwnerInstructionsIntoNextAvailableRole(t *testing.T) {
 	}
 }
 
+func TestRunOwnerInstructionArrivingDuringLeftWaitsForNextLeft(t *testing.T) {
+	s := &scripted{outputs: []string{"first work", "review", "second work", "DONE: ready"}}
+	instructions := make(chan string, 1)
+	_, err := Run(context.Background(), s, Options{
+		Goal: "task", LeftID: "left", RightID: "right", Instructions: instructions,
+		OnTurn: func(role string, round int, turn Turn) error {
+			if role == "left" && round == 1 {
+				instructions <- "OWNER_DURING_LEFT"
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(s.requests[1].Messages[0].Content, "OWNER_DURING_LEFT") {
+		t.Fatalf("RIGHT consumed owner instruction: %q", s.requests[1].Messages[0].Content)
+	}
+	if got := s.requests[2].Messages[0].Content; !strings.Contains(got, "OWNER_DURING_LEFT") || !strings.Contains(got, "review") {
+		t.Fatalf("next LEFT did not receive queued owner instruction and feedback: %q", got)
+	}
+}
+
 func TestRunRetriesLeftOnceAfterConfiguredDelay(t *testing.T) {
 	clock := &fakeClock{now: time.Unix(1000, 0)}
 	left := &failOnceStreamer{err: errors.New("temporary failure"), inner: &scripted{outputs: []string{"recovered"}}}
