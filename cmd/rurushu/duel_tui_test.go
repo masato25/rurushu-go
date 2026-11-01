@@ -68,6 +68,48 @@ func TestDuelTUIEscapeClearsCurrentInput(t *testing.T) {
 	}
 }
 
+func TestDuelSlashAutocompleteCompletesBeforeExecuting(t *testing.T) {
+	ui := newDuelUI(make(chan string, 4), make(chan duelUpdate, 4), func() {}, func() {})
+	ui.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	ui.input.SetValue("/he")
+	ui.updateSlashAutocomplete()
+
+	if len(ui.slashMatches) != 1 || ui.slashMatches[0].Name != "help" {
+		t.Fatalf("matches=%#v", ui.slashMatches)
+	}
+	if view := ui.View().Content; !strings.Contains(view, "/help") {
+		t.Fatalf("autocomplete not rendered: %q", view)
+	}
+
+	ui.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if got := ui.input.Value(); got != "/help" {
+		t.Fatalf("completed input=%q", got)
+	}
+	if len(ui.workLines) != 0 {
+		t.Fatalf("partial command executed: %#v", ui.workLines)
+	}
+
+	ui.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if len(ui.workLines) != 1 || !strings.Contains(ui.workLines[0], "DUEL COMMANDS") {
+		t.Fatalf("/help did not execute: %#v", ui.workLines)
+	}
+}
+
+func TestDuelSlashAutocompleteNavigationAndTab(t *testing.T) {
+	ui := newDuelUI(make(chan string, 4), make(chan duelUpdate, 4), func() {}, func() {})
+	ui.input.SetValue("/")
+	ui.updateSlashAutocomplete()
+	if len(ui.slashMatches) < 2 {
+		t.Fatalf("matches=%#v", ui.slashMatches)
+	}
+	ui.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	want := "/" + ui.slashMatches[ui.slashMatchIndex].Name
+	ui.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	if got := ui.input.Value(); got != want {
+		t.Fatalf("tab completion=%q want=%q", got, want)
+	}
+}
+
 func TestParseDuelNewSessionCommand(t *testing.T) {
 	for _, tc := range []struct {
 		input string
