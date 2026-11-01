@@ -89,6 +89,7 @@ func run(args []string) error {
 	autoApprove := fs.Bool("auto-approve", saved.AutoApprove, "automatically approve all tool operations (unsafe; trusted tasks only)")
 	resumeSession := fs.String("resume", "", "resume project session by id or 'last'")
 	continueLast := fs.Bool("c", false, "continue the last project session (same as --resume last)")
+	forceContinueLast := fs.Bool("kc", false, "force continue the last session despite existing owner (unsafe)")
 	pprofAddr := fs.String("pprof", "", "enable local Go profiling on 127.0.0.1:PORT (development only)")
 	var promptFiles stringList
 	fs.Var(&promptFiles, "prompt-file", "append a prompt file; repeatable")
@@ -101,6 +102,9 @@ func run(args []string) error {
 	}
 	if *continueLast && strings.TrimSpace(*resumeSession) != "" {
 		return errors.New("-c cannot be combined with --resume")
+	}
+	if *forceContinueLast && *continueLast {
+		return errors.New("-kc cannot be combined with -c")
 	}
 	if *pprofAddr != "" {
 		if err := startLocalPprof(*pprofAddr); err != nil {
@@ -168,6 +172,7 @@ func run(args []string) error {
 	if err != nil {
 		return fmt.Errorf("initialize project state: %w", err)
 	}
+	projectStore.SetForceSessionOwnership(*forceContinueLast)
 	jobManager, err := jobs.Open(absCWD, projectStore.Dir, "")
 	if err != nil {
 		return fmt.Errorf("initialize managed jobs: %w", err)
@@ -177,7 +182,7 @@ func run(args []string) error {
 	}
 	var session projectstate.Session
 	resumeID := strings.TrimSpace(*resumeSession)
-	if *continueLast {
+	if *continueLast || (*forceContinueLast && resumeID == "") {
 		resumeID = "last"
 	}
 	if resumeID == "" {
@@ -195,6 +200,9 @@ func run(args []string) error {
 	}
 	if err := projectStore.HoldSession(session.ID); err != nil {
 		return err
+	}
+	if *forceContinueLast {
+		fmt.Fprintln(os.Stderr, "rurushu: WARNING: -kc bypasses session ownership; concurrent clients may overwrite history")
 	}
 	defer projectStore.ReleaseSession()
 

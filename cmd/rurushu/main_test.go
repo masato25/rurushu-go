@@ -105,6 +105,10 @@ func TestRunListModelsWithoutModel(t *testing.T) {
 }
 
 func TestReloadArgsPreservesSessionAndProvider(t *testing.T) {
+	force := reloadArgs([]string{"-provider", "cos", "-kc"}, "ses_target")
+	if !reflect.DeepEqual(force, []string{"-provider", "cos", "-kc", "--resume", "ses_target"}) {
+		t.Fatalf("forced reload args = %q", force)
+	}
 	got := reloadArgs([]string{"-provider", "cos", "-c", "--activity", "debug"}, "ses_target")
 	want := []string{"-provider", "cos", "--activity", "debug", "--resume", "ses_target"}
 	if !reflect.DeepEqual(got, want) {

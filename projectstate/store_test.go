@@ -399,6 +399,40 @@ func TestSessionOwnershipCrossProcess(t *testing.T) {
 	store.ReleaseSession()
 }
 
+func TestForceSessionOwnershipBypassesOnlyLease(t *testing.T) {
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := store.StartSession("model", "cos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.HoldSession(session.ID); err != nil {
+		t.Fatal(err)
+	}
+	defer store.ReleaseSession()
+	other, err := Open(store.ProjectRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := other.HoldSession(session.ID); err == nil {
+		t.Fatal("normal ownership unexpectedly succeeded")
+	}
+	other.SetForceSessionOwnership(true)
+	if err := other.HoldSession(session.ID); err != nil {
+		t.Fatalf("force ownership failed: %v", err)
+	}
+	history := []provider.Message{{Role: provider.RoleUser, Content: "forced continuation"}}
+	if _, err := other.SaveSession(session.ID, "model", "cos", history); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := store.LoadSession(session.ID)
+	if err != nil || !reflect.DeepEqual(loaded.Messages, history) {
+		t.Fatalf("forced history: %+v %v", loaded.Messages, err)
+	}
+}
+
 func TestLoadLegacyMetadataOnlySession(t *testing.T) {
 	root := t.TempDir()
 	store, err := Open(root)

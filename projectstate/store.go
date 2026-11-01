@@ -57,12 +57,13 @@ type sessionDelta struct {
 }
 
 type Store struct {
-	ProjectRoot string
-	Dir         string
-	mu          sync.Mutex
-	cache       map[string]sessionCache
-	ownerFile   *os.File
-	ownerID     string
+	ProjectRoot           string
+	Dir                   string
+	mu                    sync.Mutex
+	cache                 map[string]sessionCache
+	ownerFile             *os.File
+	ownerID               string
+	forceSessionOwnership bool
 }
 
 type sessionCache struct {

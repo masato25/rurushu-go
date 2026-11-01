@@ -17,6 +17,9 @@ func (s *Store) HoldSession(id string) error {
 	if !validSessionID(id) {
 		return fmt.Errorf("invalid session id %q", id)
 	}
+	if s.forceSessionOwnership {
+		return nil
+	}
 	if s.ownerID == id && s.ownerFile != nil {
 		return nil
 	}
@@ -47,6 +50,14 @@ func (s *Store) HoldSession(id string) error {
 		_ = previous.Close()
 	}
 	return nil
+}
+
+// SetForceSessionOwnership bypasses interactive session ownership without
+// disabling the short-lived per-save writer lock.
+func (s *Store) SetForceSessionOwnership(force bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.forceSessionOwnership = force
 }
 
 func (s *Store) ReleaseSession() {
