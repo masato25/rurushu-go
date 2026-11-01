@@ -333,10 +333,14 @@ go run ./cmd/rurushu duel --new \
   --ollama-url http://192.168.2.109:11434
 
 # Convenience launcher for the same COS LEFT + 27B Ollama RIGHT setup:
+# Continue the last Ollama RIGHT duel for the current project
+./scripts/duel-ollama-right.sh --continue
+
+# Or start a fresh duel with a new goal
 ./scripts/duel-ollama-right.sh --new --goal "continue development"
 ```
 
-The Ollama launcher requires an explicit `--new` or `--resume`. This prevents it from silently reusing an older duel whose persisted RIGHT provider is still COS. `--resume` is accepted only when the existing duel state already records `right_provider=ollama`.
+The Ollama launcher requires an explicit `--new`, `--continue`, or `--resume`. `--continue` is an alias for `--resume` and continues the current project's last duel. Continue/resume is accepted only when that project's persisted state already records `right_provider=ollama`.
 
 The command opens a split-screen TUI: LEFT's work reports appear on the left, RIGHT's short feedback on the right, and an owner input area at the bottom. Enter submits additional instructions while the duel keeps working; Shift+Enter adds a line. Instructions are applied at the next role boundary, not injected into an in-flight turn. Ctrl+C exits and preserves the latest completed-round summary.
 
