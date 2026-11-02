@@ -113,6 +113,25 @@ func (m *duelUI) setInitialLeftHistory(history []provider.Message) {
 		m.appendLocalMarkdownOutput(label, content)
 	}
 }
+
+func (m *duelUI) setInitialRightHistory(history []duelPersistedTurn) {
+	for _, item := range history {
+		if strings.TrimSpace(item.Summary) == "" {
+			continue
+		}
+		entry := renderDuelTurn(duelUpdate{
+			role:      "right",
+			round:     item.Round,
+			roundTime: item.Time,
+			turn:      duel.Turn{Action: item.Action, Summary: item.Summary, Content: item.Summary},
+		}, max(16, m.work.Width()))
+		m.workLines = append(m.workLines, entry)
+	}
+	if len(history) > 0 {
+		m.work.SetContent(strings.Join(m.workLines, "\n\n"))
+		m.work.GotoBottom()
+	}
+}
 func (m *duelUI) setInitialGoalHandler(fn func(goal string) error) {
 	m.setInitialGoal = fn
 	m.waitingForGoal = true

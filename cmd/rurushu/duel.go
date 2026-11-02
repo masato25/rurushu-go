@@ -24,26 +24,34 @@ import (
 )
 
 type duelState struct {
-	Goal            string      `json:"goal"`
-	LeftID          string      `json:"left_session"`
-	RightID         string      `json:"right_session"`
-	LeftProvider    string      `json:"left_provider,omitempty"`
-	LeftModel       string      `json:"left_model,omitempty"`
-	RightProvider   string      `json:"right_provider,omitempty"`
-	RightModel      string      `json:"right_model,omitempty"`
-	Mode            string      `json:"mode,omitempty"`
-	PollEvery       string      `json:"poll_every,omitempty"`
-	StartedAt       time.Time   `json:"started_at,omitempty"`
-	Deadline        time.Time   `json:"deadline,omitempty"`
-	NextPollAt      time.Time   `json:"next_poll_at,omitempty"`
-	LastAction      string      `json:"last_action,omitempty"`
-	LastObservation string      `json:"last_observation,omitempty"`
-	Rounds          int         `json:"rounds"`
-	RoundTimes      []time.Time `json:"round_times,omitempty"`
-	Status          string      `json:"status"`
-	Summary         string      `json:"summary"`
-	LastError       string      `json:"last_error,omitempty"`
-	PendingOwner    []string    `json:"pending_owner,omitempty"`
+	Goal            string              `json:"goal"`
+	LeftID          string              `json:"left_session"`
+	RightID         string              `json:"right_session"`
+	LeftProvider    string              `json:"left_provider,omitempty"`
+	LeftModel       string              `json:"left_model,omitempty"`
+	RightProvider   string              `json:"right_provider,omitempty"`
+	RightModel      string              `json:"right_model,omitempty"`
+	Mode            string              `json:"mode,omitempty"`
+	PollEvery       string              `json:"poll_every,omitempty"`
+	StartedAt       time.Time           `json:"started_at,omitempty"`
+	Deadline        time.Time           `json:"deadline,omitempty"`
+	NextPollAt      time.Time           `json:"next_poll_at,omitempty"`
+	LastAction      string              `json:"last_action,omitempty"`
+	LastObservation string              `json:"last_observation,omitempty"`
+	Rounds          int                 `json:"rounds"`
+	RoundTimes      []time.Time         `json:"round_times,omitempty"`
+	Status          string              `json:"status"`
+	Summary         string              `json:"summary"`
+	LastError       string              `json:"last_error,omitempty"`
+	PendingOwner    []string            `json:"pending_owner,omitempty"`
+	RightHistory    []duelPersistedTurn `json:"right_history,omitempty"`
+}
+
+type duelPersistedTurn struct {
+	Round   int       `json:"round"`
+	Time    time.Time `json:"time,omitempty"`
+	Action  string    `json:"action,omitempty"`
+	Summary string    `json:"summary"`
 }
 
 type duelRoleConfig struct {
@@ -808,6 +816,12 @@ Options:`)
 			defer stateMu.Unlock()
 			shownRound := applyDuelTurnState(&state, role, turn)
 			roundTime := ensureRoundTime(&state, shownRound, time.Now())
+			if role == "right" {
+				state.RightHistory = append(state.RightHistory, duelPersistedTurn{Round: shownRound, Time: roundTime, Action: turn.Action, Summary: turn.Summary})
+				if len(state.RightHistory) > 50 {
+					state.RightHistory = append([]duelPersistedTurn(nil), state.RightHistory[len(state.RightHistory)-50:]...)
+				}
+			}
 			if err := saveDuelState(path, state); err != nil {
 				return err
 			}
@@ -943,6 +957,7 @@ Options:`)
 			return fmt.Errorf("load LEFT session for duel UI: %w", loadErr)
 		}
 		ui.setInitialLeftHistory(leftSession.Messages)
+		ui.setInitialRightHistory(state.RightHistory)
 	}
 	aux := tuiPkg.NewAuxiliaryWorkspace(abs, terminalService)
 	aux.SetContextInfo(
