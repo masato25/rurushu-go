@@ -11,6 +11,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/masato25/rurushu-go/duel"
+	"github.com/masato25/rurushu-go/provider"
 	"github.com/masato25/rurushu-go/tui"
 )
 
@@ -36,6 +37,7 @@ func TestDuelTUISendsOwnerInstruction(t *testing.T) {
 func TestDuelTUIQueuesMultipleInstructionsWhileRunning(t *testing.T) {
 	notes := make(chan string, 4)
 	ui := newDuelUI(notes, make(chan duelUpdate, 4), func() {}, func() {})
+	ui.running = true
 
 	for _, note := range []string{"first steering note", "second steering note"} {
 		ui.input.SetValue(note)
@@ -48,7 +50,7 @@ func TestDuelTUIQueuesMultipleInstructionsWhileRunning(t *testing.T) {
 	if got := len(notes); got != 2 {
 		t.Fatalf("queued instructions=%d want=2", got)
 	}
-	if view := ui.View().Content; !strings.Contains(view, "待送 2 則") {
+	if view := ui.View().Content; !strings.Contains(view, "待 LEFT 消費 2 則") {
 		t.Fatalf("queue depth not visible in TUI: %q", view)
 	}
 	if got := <-notes; got != "first steering note" {
@@ -56,6 +58,68 @@ func TestDuelTUIQueuesMultipleInstructionsWhileRunning(t *testing.T) {
 	}
 	if got := <-notes; got != "second steering note" {
 		t.Fatalf("second queued instruction=%q", got)
+	}
+}
+
+func TestDuelTUIOwnerInstructionStartsLeftWhenNoRunIsActive(t *testing.T) {
+	notes := make(chan string, 4)
+	runs := 0
+	ui := newDuelUI(notes, make(chan duelUpdate, 4), func() { runs++ }, func() {})
+	ui.stopped = true
+	ui.running = false
+	ui.input.SetValue("commit")
+	_, cmd := ui.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if runs != 1 {
+		t.Fatalf("runs=%d want=1", runs)
+	}
+	if ui.stopped || !strings.Contains(ui.status, "立即啟動 LEFT") {
+		t.Fatalf("stopped=%v status=%q", ui.stopped, ui.status)
+	}
+	if cmd == nil {
+		t.Fatal("expected update waiter after starting LEFT")
+	}
+}
+
+func TestDuelTUIOwnerInstructionRestartsAfterRetryRunFinishes(t *testing.T) {
+	notes := make(chan string, 4)
+	updates := make(chan duelUpdate, 4)
+	runs, stops := 0, 0
+	ui := newDuelUI(notes, updates, func() { runs++ }, func() {})
+	ui.setStopLoopHandler(func() { stops++ })
+	ui.running = true
+	ui.retrying = true
+	ui.input.SetValue("commit")
+	_, cmd := ui.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if stops != 1 || !ui.restartAfterDone || runs != 0 {
+		t.Fatalf("stops=%d restart=%v runs=%d", stops, ui.restartAfterDone, runs)
+	}
+	if cmd == nil {
+		t.Fatal("expected waiter for canceled run completion")
+	}
+	_, cmd = ui.Update(duelUpdate{done: true, err: context.Canceled})
+	if runs != 1 || ui.restartAfterDone {
+		t.Fatalf("runs=%d restart=%v", runs, ui.restartAfterDone)
+	}
+	if cmd == nil {
+		t.Fatal("expected waiter after restarted LEFT")
+	}
+}
+
+func TestDuelTUIOwnerInstructionIsPersistedBeforeQueueing(t *testing.T) {
+	notes := make(chan string, 4)
+	ui := newDuelUI(notes, make(chan duelUpdate, 4), func() {}, func() {})
+	var persisted []string
+	ui.setOwnerQueueHandler(func(note string) error {
+		persisted = append(persisted, note)
+		return nil
+	})
+	ui.input.SetValue("commit current changes")
+	ui.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if len(persisted) != 1 || persisted[0] != "commit current changes" {
+		t.Fatalf("persisted=%v", persisted)
+	}
+	if got := <-notes; got != "commit current changes" {
+		t.Fatalf("queued=%q", got)
 	}
 }
 
@@ -153,6 +217,21 @@ func TestDuelCanceledRunShowsStoppedLoopStatus(t *testing.T) {
 	ui.Update(duelUpdate{done: true, err: context.Canceled})
 	if !ui.stopped || !strings.Contains(ui.status, "loop 已停止") {
 		t.Fatalf("stopped=%v status=%q", ui.stopped, ui.status)
+	}
+}
+
+func TestDuelInitialLeftHistoryIsVisible(t *testing.T) {
+	ui := newDuelUI(make(chan string, 4), make(chan duelUpdate, 4), func() {}, func() {})
+	ui.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	ui.setInitialLeftHistory([]provider.Message{
+		{Role: provider.RoleUser, Content: "single question"},
+		{Role: provider.RoleAssistant, Content: "single answer"},
+	})
+	view := ui.View().Content
+	for _, want := range []string{"CONTINUED FROM SINGLE", "single question", "single answer"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("view missing %q: %q", want, view)
+		}
 	}
 }
 

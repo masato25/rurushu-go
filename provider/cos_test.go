@@ -184,6 +184,46 @@ func TestCOSCompactResumeUsesExistingMapping(t *testing.T) {
 	}
 }
 
+func TestCOSListModelsUsesControlAPI(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/models" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
+			t.Fatalf("authorization=%q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"state":"ready","models":[{"id":"gpt-6"},{"id":"gpt-5-6"}]}`))
+	}))
+	defer server.Close()
+	home := t.TempDir()
+	dir := filepath.Join(home, "Library", "Application Support", "chat-on-steroids", "control-api")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	port := strings.TrimPrefix(server.URL, "http://127.0.0.1:")
+	if err := os.WriteFile(filepath.Join(dir, "endpoint.json"), []byte(`{"port":`+port+`}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "token"), []byte("test-token"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	p := &COSProvider{HomeDir: home, HTTPClient: server.Client()}
+	models, err := p.ListModels(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"gpt-6", "gpt-5-6"}
+	if len(models) != len(want) {
+		t.Fatalf("models=%v", models)
+	}
+	for i := range want {
+		if models[i] != want[i] {
+			t.Fatalf("models=%v want=%v", models, want)
+		}
+	}
+}
+
 func TestCOSProjectConfigPrecedence(t *testing.T) {
 	home := t.TempDir()
 	cwd := t.TempDir()

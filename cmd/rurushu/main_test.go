@@ -61,6 +61,31 @@ func TestFirstNonEmpty(t *testing.T) {
 	}
 }
 
+func TestResolveSingleModelForCOSIgnoresLegacyFallback(t *testing.T) {
+	if got := resolveSingleModel("cos", "openaicodex/gpt-6.1-sol", false, "", "", ""); got != "chatgpt-web" {
+		t.Fatalf("got %q", got)
+	}
+	if got := resolveSingleModel("cos", "explicit-cos-model", true, "", "", ""); got != "explicit-cos-model" {
+		t.Fatalf("explicit model got %q", got)
+	}
+	if got := resolveSingleModel("cos", "single-config-model", false, "", "", "single-config-model"); got != "single-config-model" {
+		t.Fatalf("single config model got %q", got)
+	}
+}
+
+func TestChooseAvailableModel(t *testing.T) {
+	models := []string{"gpt-6", "gpt-5-6"}
+	if got := chooseAvailableModel("gpt-6", models, "gpt-5-6"); got != "gpt-6" {
+		t.Fatalf("kept model=%q", got)
+	}
+	if got := chooseAvailableModel("openaicodex/gpt-6.1-sol", models, "gpt-5-6"); got != "gpt-5-6" {
+		t.Fatalf("fallback model=%q", got)
+	}
+	if got := chooseAvailableModel("", []string{"custom"}, "gpt-5-6"); got != "custom" {
+		t.Fatalf("first model=%q", got)
+	}
+}
+
 func TestRunRequiresModel(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("RURUSHU_MODEL", "")

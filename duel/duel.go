@@ -26,9 +26,12 @@ type Options struct {
 	Goal, LeftID, RightID, InitialSummary string
 	LeftModel, RightModel                 string
 	LeftStreamer, RightStreamer           Streamer
+	LeftHistory                           []provider.Message
+	LeftRemoteHistory                     bool
 	GoalFunc                              func() string
 	OnRoleStart                           func(role string, round int) error
 	OnTurn                                func(role string, round int, turn Turn) error
+	OnLeftExchange                        func(round int, ownerNotes []string, prompt, response string) error
 	Instructions                          <-chan string
 	RetryDelay                            time.Duration
 	RetryClock                            Clock
@@ -92,9 +95,13 @@ type RecurringOptions struct {
 }
 
 func callTextOnce(ctx context.Context, s Streamer, id, model, prompt string, maxTokens *int) (string, error) {
+	return callTextOnceMessages(ctx, s, id, model, []provider.Message{{Role: provider.RoleUser, Content: prompt}}, maxTokens)
+}
+
+func callTextOnceMessages(ctx context.Context, s Streamer, id, model string, messages []provider.Message, maxTokens *int) (string, error) {
 	events, err := s.Stream(ctx, provider.CompletionRequest{
 		Model: model, ReasoningEffort: duelReasoningEffort, SessionID: id, MaxTokens: maxTokens,
-		Messages: []provider.Message{{Role: provider.RoleUser, Content: prompt}},
+		Messages: messages,
 	})
 	if err != nil {
 		return "", err
@@ -124,6 +131,39 @@ func callTextOnce(ctx context.Context, s Streamer, id, model, prompt string, max
 		return "", errors.New("provider turn closed without completion")
 	}
 	return strings.TrimSpace(output.String()), nil
+}
+
+func callLeftWithRetry(ctx context.Context, s Streamer, id, model, prompt string, history []provider.Message, remoteHistory bool, round int, o Options) (string, error) {
+	messages := []provider.Message{{Role: provider.RoleUser, Content: prompt}}
+	if !remoteHistory && len(history) > 0 {
+		messages = append(append([]provider.Message(nil), history...), messages...)
+	}
+	call := func() (string, error) {
+		return callTextOnceMessages(ctx, s, id, model, messages, nil)
+	}
+	text, err := call()
+	if err == nil || ctx.Err() != nil || o.RetryDelay <= 0 {
+		return text, err
+	}
+	if o.OnRetry != nil {
+		if notifyErr := o.OnRetry("left", round, o.RetryDelay, err); notifyErr != nil {
+			return "", notifyErr
+		}
+	}
+	clock := o.RetryClock
+	if clock == nil {
+		clock = realClock{}
+	}
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case <-clock.After(o.RetryDelay):
+	}
+	text, retryErr := call()
+	if retryErr != nil {
+		return "", fmt.Errorf("retry after %s failed: %w", o.RetryDelay, retryErr)
+	}
+	return text, nil
 }
 
 func callTextWithRetry(ctx context.Context, s Streamer, id, model, prompt, role string, round int, maxTokens *int, o Options) (string, error) {
@@ -198,6 +238,7 @@ func Run(ctx context.Context, fallback Streamer, o Options) (Result, error) {
 	result := Result{Status: "running"}
 	feedback := strings.TrimSpace(o.InitialSummary)
 	continuingSession := feedback != ""
+	leftHistory := append([]provider.Message(nil), o.LeftHistory...)
 	for round := 1; ; round++ {
 		if err := ctx.Err(); err != nil {
 			return result, err
@@ -208,6 +249,7 @@ func Run(ctx context.Context, fallback Streamer, o Options) (Result, error) {
 			}
 		}
 		ownerNotes := drainInstructions(o.Instructions)
+		ownerText := strings.Join(ownerNotes, "\n")
 		goal := currentGoal(o)
 		var leftPrompt string
 		if round == 1 && !continuingSession {
@@ -216,13 +258,22 @@ Goal: %s
 Owner instructions (highest priority): %s
 RIGHT feedback from the previous round: %s
 
-Do the useful work now. Do not wait for RIGHT to make a plan for you. Your final response should be your normal concise work report for this round; do not wrap it in JSON or a special protocol.`, goal, ownerNotes, firstNonEmptyText(feedback, "No RIGHT feedback yet; start from the goal."))
+Do the useful work now. Do not wait for RIGHT to make a plan for you. Your final response should be your normal concise work report for this round; do not wrap it in JSON or a special protocol.`, goal, ownerText, firstNonEmptyText(feedback, "No RIGHT feedback yet; start from the goal."))
 		} else {
-			leftPrompt = compactLeftFollowup(ownerNotes, feedback)
+			leftPrompt = compactLeftFollowup(ownerText, feedback)
 		}
-		leftText, err := callTextWithRetry(ctx, leftStreamer, o.LeftID, roleModel(o.LeftModel), leftPrompt, "left", round, nil, o)
+		leftText, err := callLeftWithRetry(ctx, leftStreamer, o.LeftID, roleModel(o.LeftModel), leftPrompt, leftHistory, o.LeftRemoteHistory, round, o)
 		if err != nil {
 			return result, fmt.Errorf("left round %d: %w", round, err)
+		}
+		leftHistory = append(leftHistory,
+			provider.Message{Role: provider.RoleUser, Content: leftPrompt},
+			provider.Message{Role: provider.RoleAssistant, Content: leftText},
+		)
+		if o.OnLeftExchange != nil {
+			if err := o.OnLeftExchange(round, ownerNotes, leftPrompt, leftText); err != nil {
+				return result, err
+			}
 		}
 		leftTurn := Turn{Action: "work", Summary: leftText, Content: leftText}
 		if o.OnTurn != nil {
@@ -290,6 +341,7 @@ func RunRecurring(ctx context.Context, fallback Streamer, o RecurringOptions) (R
 	result := Result{Status: "running"}
 	feedback := strings.TrimSpace(o.InitialSummary)
 	continuingSession := feedback != ""
+	leftHistory := append([]provider.Message(nil), o.LeftHistory...)
 	next := o.NextPollAt
 	if next.IsZero() {
 		next = clock.Now()
@@ -320,6 +372,7 @@ func RunRecurring(ctx context.Context, fallback Streamer, o RecurringOptions) (R
 		}
 
 		ownerNotes := drainInstructions(o.Instructions)
+		ownerText := strings.Join(ownerNotes, "\n")
 		goal := currentGoal(o.Options)
 		var leftPrompt string
 		if round == 1 && !continuingSession {
@@ -328,13 +381,22 @@ Goal: %s
 Owner instructions (highest priority): %s
 RIGHT feedback from the previous round: %s
 
-Use tools and perform useful work. Return a normal concise final work report; no JSON protocol.`, goal, ownerNotes, firstNonEmptyText(feedback, "No RIGHT feedback yet; inspect the current state and act if useful."))
+Use tools and perform useful work. Return a normal concise final work report; no JSON protocol.`, goal, ownerText, firstNonEmptyText(feedback, "No RIGHT feedback yet; inspect the current state and act if useful."))
 		} else {
-			leftPrompt = compactLeftFollowup(ownerNotes, feedback)
+			leftPrompt = compactLeftFollowup(ownerText, feedback)
 		}
-		leftText, err := callTextWithRetry(ctx, leftStreamer, o.LeftID, roleModel(o.LeftModel), leftPrompt, "left", round, nil, o.Options)
+		leftText, err := callLeftWithRetry(ctx, leftStreamer, o.LeftID, roleModel(o.LeftModel), leftPrompt, leftHistory, o.LeftRemoteHistory, round, o.Options)
 		if err != nil {
 			return result, fmt.Errorf("left round %d: %w", round, err)
+		}
+		leftHistory = append(leftHistory,
+			provider.Message{Role: provider.RoleUser, Content: leftPrompt},
+			provider.Message{Role: provider.RoleAssistant, Content: leftText},
+		)
+		if o.OnLeftExchange != nil {
+			if err := o.OnLeftExchange(round, ownerNotes, leftPrompt, leftText); err != nil {
+				return result, err
+			}
 		}
 		leftTurn := Turn{Action: "work", Summary: leftText, Content: leftText}
 		if o.OnTurn != nil {
@@ -391,20 +453,20 @@ func firstNonEmptyText(value, fallback string) string {
 	return fallback
 }
 
-func drainInstructions(ch <-chan string) string {
+func drainInstructions(ch <-chan string) []string {
 	var notes []string
 	for ch != nil {
 		select {
 		case note, ok := <-ch:
 			if !ok {
-				return strings.Join(notes, "\n")
+				return notes
 			}
 			if text := strings.TrimSpace(note); text != "" {
 				notes = append(notes, text)
 			}
 		default:
-			return strings.Join(notes, "\n")
+			return notes
 		}
 	}
-	return strings.Join(notes, "\n")
+	return notes
 }

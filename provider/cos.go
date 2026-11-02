@@ -73,8 +73,29 @@ func NewCOSProvider(cwd string) *COSProvider {
 
 func (p *COSProvider) ID() string { return "cos" }
 
-func (p *COSProvider) ListModels(context.Context) ([]string, error) {
-	return []string{"chatgpt-web", "cos"}, nil
+func (p *COSProvider) ListModels(ctx context.Context) ([]string, error) {
+	baseURL, token, err := p.credentials()
+	if err != nil {
+		return nil, err
+	}
+	var payload struct {
+		Models []struct {
+			ID string `json:"id"`
+		} `json:"models"`
+	}
+	if err := p.getJSON(ctx, baseURL+"/v1/models", token, &payload); err != nil {
+		return nil, err
+	}
+	models := make([]string, 0, len(payload.Models))
+	for _, model := range payload.Models {
+		if id := strings.TrimSpace(model.ID); id != "" {
+			models = append(models, id)
+		}
+	}
+	if len(models) == 0 {
+		return nil, errors.New("Chat On Steroids returned no available models")
+	}
+	return models, nil
 }
 
 // CompactResume requests COS's native in-place conversation handoff for an

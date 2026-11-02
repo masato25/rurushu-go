@@ -235,6 +235,165 @@ func TestResolveDuelStateReusesExistingPairByDefault(t *testing.T) {
 	}
 }
 
+func TestCreateDuelStateWithLeftReusesExistingSession(t *testing.T) {
+	root := t.TempDir()
+	store, err := projectstate.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	left, err := store.StartSession("chatgpt-web", "cos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(store.Dir, "duel-state.json")
+	state, err := createDuelStateWithLeft(
+		store,
+		path,
+		"continue current work",
+		left.ID,
+		duelRoleConfig{Provider: "cos", Model: "chatgpt-web"},
+		duelRoleConfig{Provider: "ollama", Model: "qwen3:8b"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.LeftID != left.ID {
+		t.Fatalf("left session=%q want existing %q", state.LeftID, left.ID)
+	}
+	if state.RightID == "" || state.RightID == left.ID {
+		t.Fatalf("right session=%q", state.RightID)
+	}
+	if state.LeftProvider != "cos" || state.LeftModel != "chatgpt-web" {
+		t.Fatalf("left config=%s/%s", state.LeftProvider, state.LeftModel)
+	}
+}
+
+func TestReconcileDuelStateForLeftRepairsDuplicateRightSession(t *testing.T) {
+	root := t.TempDir()
+	store, err := projectstate.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	left, err := store.StartSession("chatgpt-web", "cos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(store.Dir, "duel-state.json")
+	broken := duelState{
+		Goal:          "continue work",
+		LeftID:        left.ID,
+		RightID:       left.ID,
+		LeftProvider:  "cos",
+		LeftModel:     "chatgpt-web",
+		RightProvider: "cos",
+		RightModel:    "chatgpt-web",
+		Rounds:        7,
+		Status:        "error",
+	}
+	if err := saveDuelState(path, broken); err != nil {
+		t.Fatal(err)
+	}
+
+	state, reused, err := reconcileDuelStateForLeft(
+		store,
+		path,
+		"",
+		left.ID,
+		duelRoleConfig{Provider: "cos", Model: "chatgpt-web"},
+		duelRoleConfig{Provider: "ollama", Model: "qwen3:8b"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reused {
+		t.Fatal("expected existing state to be reused")
+	}
+	if state.LeftID != left.ID {
+		t.Fatalf("left=%q want=%q", state.LeftID, left.ID)
+	}
+	if state.RightID == "" || state.RightID == left.ID {
+		t.Fatalf("right session was not repaired: %q", state.RightID)
+	}
+	if state.RightProvider != "ollama" || state.RightModel != "qwen3:8b" {
+		t.Fatalf("right config=%s/%s", state.RightProvider, state.RightModel)
+	}
+	if state.Rounds != 7 || state.Goal != "continue work" {
+		t.Fatalf("state history lost: %+v", state)
+	}
+	if state.Status != "running" || state.LastError != "" {
+		t.Fatalf("state not recovered: status=%q err=%q", state.Status, state.LastError)
+	}
+	if _, err := loadDuelState(path); err != nil {
+		t.Fatalf("repaired state is still invalid: %v", err)
+	}
+}
+
+func TestReconcileDuelStateForLeftUsesActiveLeftConfigInsteadOfStaleSessionModel(t *testing.T) {
+	root := t.TempDir()
+	store, err := projectstate.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	left, err := store.StartSession("openaicodex/gpt-6.1-sol", "cos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(store.Dir, "duel-state.json")
+	state, _, err := reconcileDuelStateForLeft(
+		store,
+		path,
+		"continue work",
+		left.ID,
+		duelRoleConfig{Provider: "cos", Model: "chatgpt-web"},
+		duelRoleConfig{Provider: "ollama", Model: "qwen3:8b"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.LeftProvider != "cos" || state.LeftModel != "chatgpt-web" {
+		t.Fatalf("left config=%s/%s", state.LeftProvider, state.LeftModel)
+	}
+}
+
+func TestReconcileDuelStateForLeftReplacesRightWhenConfigChanges(t *testing.T) {
+	root := t.TempDir()
+	store, err := projectstate.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	left, _ := store.StartSession("chatgpt-web", "cos")
+	oldRight, _ := store.StartSession("chatgpt-web", "cos")
+	path := filepath.Join(store.Dir, "duel-state.json")
+	if err := saveDuelState(path, duelState{
+		Goal:          "continue work",
+		LeftID:        left.ID,
+		RightID:       oldRight.ID,
+		LeftProvider:  "cos",
+		LeftModel:     "chatgpt-web",
+		RightProvider: "cos",
+		RightModel:    "chatgpt-web",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	state, _, err := reconcileDuelStateForLeft(
+		store,
+		path,
+		"",
+		left.ID,
+		duelRoleConfig{Provider: "cos", Model: "chatgpt-web"},
+		duelRoleConfig{Provider: "ollama", Model: "qwen3:8b"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.RightID == oldRight.ID {
+		t.Fatal("RIGHT session was reused despite provider/model config change")
+	}
+	if state.RightProvider != "ollama" || state.RightModel != "qwen3:8b" {
+		t.Fatalf("right config=%s/%s", state.RightProvider, state.RightModel)
+	}
+}
+
 func TestResolveDuelStateRequiresNewForDifferentGoal(t *testing.T) {
 	dir := t.TempDir()
 	store, err := projectstate.Open(dir)

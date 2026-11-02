@@ -43,6 +43,7 @@ type duelState struct {
 	Status          string      `json:"status"`
 	Summary         string      `json:"summary"`
 	LastError       string      `json:"last_error,omitempty"`
+	PendingOwner    []string    `json:"pending_owner,omitempty"`
 }
 
 type duelRoleConfig struct {
@@ -211,6 +212,88 @@ func loadDuelState(path string) (duelState, error) {
 	return state, nil
 }
 
+func loadDuelStateLoose(path string) (duelState, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return duelState{}, err
+	}
+	var state duelState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return duelState{}, fmt.Errorf("decode duel state: %w", err)
+	}
+	return state, nil
+}
+
+func reconcileDuelStateForLeft(store *projectstate.Store, path, requestedGoal, leftSessionID string, leftCfg, rightCfg duelRoleConfig) (duelState, bool, error) {
+	leftSessionID = strings.TrimSpace(leftSessionID)
+	if leftSessionID == "" {
+		return duelState{}, false, errors.New("LEFT session is required")
+	}
+	left, err := store.LoadSession(leftSessionID)
+	if err != nil {
+		return duelState{}, false, err
+	}
+	leftCfg = normalizeDuelRoleConfig(leftCfg)
+	rightCfg = normalizeDuelRoleConfig(rightCfg)
+	_ = left
+
+	state := duelState{}
+	reused := false
+	if _, statErr := os.Stat(path); statErr == nil {
+		state, err = loadDuelStateLoose(path)
+		if err != nil {
+			return duelState{}, false, err
+		}
+		reused = true
+	} else if !os.IsNotExist(statErr) {
+		return duelState{}, false, statErr
+	}
+
+	goal := strings.TrimSpace(requestedGoal)
+	if goal == "" {
+		goal = strings.TrimSpace(state.Goal)
+	}
+	if goal == "" {
+		return duelState{}, reused, errors.New("duel goal is required")
+	}
+
+	state.Goal = goal
+	state.LeftID = leftSessionID
+	state.LeftProvider = leftCfg.Provider
+	state.LeftModel = leftCfg.Model
+
+	rightValid := strings.TrimSpace(state.RightID) != "" && state.RightID != leftSessionID
+	if rightValid {
+		right, loadErr := store.LoadSession(state.RightID)
+		if loadErr != nil {
+			rightValid = false
+		} else {
+			rightSessionCfg := normalizeDuelRoleConfig(duelRoleConfig{Provider: right.Provider, Model: right.Model})
+			if rightSessionCfg.Provider != rightCfg.Provider || rightSessionCfg.Model != rightCfg.Model {
+				rightValid = false
+			}
+		}
+	}
+	if !rightValid {
+		right, createErr := store.StartSession(rightCfg.Model, rightCfg.Provider)
+		if createErr != nil {
+			return duelState{}, reused, createErr
+		}
+		state.RightID = right.ID
+		state.RightProvider = rightCfg.Provider
+		state.RightModel = rightCfg.Model
+	} else {
+		state.RightProvider = rightCfg.Provider
+		state.RightModel = rightCfg.Model
+	}
+	state.Status = "running"
+	state.LastError = ""
+	if err := saveDuelState(path, state); err != nil {
+		return duelState{}, reused, err
+	}
+	return state, reused, nil
+}
+
 func saveDuelState(path string, state duelState) error {
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
@@ -333,6 +416,10 @@ func resolveDuelState(store *projectstate.Store, path, requestedGoal string, res
 }
 
 func createDuelState(store *projectstate.Store, path, goal string, configs ...duelRoleConfig) (duelState, error) {
+	return createDuelStateWithLeft(store, path, goal, "", configs...)
+}
+
+func createDuelStateWithLeft(store *projectstate.Store, path, goal, leftSessionID string, configs ...duelRoleConfig) (duelState, error) {
 	goal = strings.TrimSpace(goal)
 	if goal == "" {
 		return duelState{}, errors.New("duel goal is required")
@@ -341,10 +428,17 @@ func createDuelState(store *projectstate.Store, path, goal string, configs ...du
 	if leftCfg.Model == "" || rightCfg.Model == "" {
 		return duelState{}, errors.New("left and right model are required")
 	}
-	left, err := store.StartSession(leftCfg.Model, leftCfg.Provider)
+	var left projectstate.Session
+	var err error
+	if strings.TrimSpace(leftSessionID) != "" {
+		left, err = store.LoadSession(strings.TrimSpace(leftSessionID))
+	} else {
+		left, err = store.StartSession(leftCfg.Model, leftCfg.Provider)
+	}
 	if err != nil {
 		return duelState{}, err
 	}
+	leftCfg = normalizeDuelRoleConfig(leftCfg)
 	right, err := store.StartSession(rightCfg.Model, rightCfg.Provider)
 	if err != nil {
 		return duelState{}, err
@@ -383,6 +477,7 @@ func runDuel(args []string) error {
 	goal := fs.String("goal", "", "task goal for both agents")
 	leftProviderName := fs.String("left-provider", firstNonEmpty(os.Getenv("RURUSHU_LEFT_PROVIDER"), os.Getenv("RURUSHU_PROVIDER"), saved.Duel.Left.Provider, "cos"), "LEFT provider: cos, openai-compatible, or ollama")
 	leftModelName := fs.String("left-model", firstNonEmpty(os.Getenv("RURUSHU_LEFT_MODEL"), os.Getenv("RURUSHU_MODEL"), saved.Duel.Left.Model), "LEFT model (COS defaults to chatgpt-web)")
+	leftSessionID := fs.String("left-session", "", "reuse an existing project session as duel LEFT")
 	rightProviderName := fs.String("right-provider", firstNonEmpty(os.Getenv("RURUSHU_RIGHT_PROVIDER"), os.Getenv("RURUSHU_PROVIDER"), saved.Duel.Right.Provider, "cos"), "RIGHT provider: cos, openai-compatible, or ollama")
 	rightModelName := fs.String("right-model", firstNonEmpty(os.Getenv("RURUSHU_RIGHT_MODEL"), os.Getenv("RURUSHU_MODEL"), saved.Duel.Right.Model), "RIGHT model (COS defaults to chatgpt-web)")
 	baseURL := fs.String("base-url", firstNonEmpty(os.Getenv("RURUSHU_BASE_URL"), os.Getenv("OPENAI_BASE_URL"), saved.BaseURL, "https://api.openai.com/v1"), "OpenAI-compatible API base URL used by duel roles")
@@ -481,6 +576,13 @@ Options:`)
 	requestedGoal := strings.TrimSpace(*goal)
 	leftCfg := normalizeDuelRoleConfig(duelRoleConfig{Provider: *leftProviderName, Model: *leftModelName})
 	rightCfg := normalizeDuelRoleConfig(duelRoleConfig{Provider: *rightProviderName, Model: *rightModelName})
+	preferredLeftID := strings.TrimSpace(*leftSessionID)
+	if preferredLeftID != "" {
+		_, loadErr := store.LoadSession(preferredLeftID)
+		if loadErr != nil {
+			return fmt.Errorf("load duel LEFT session %s: %w", preferredLeftID, loadErr)
+		}
+	}
 	if leftCfg.Model == "" || rightCfg.Model == "" {
 		return errors.New("--left-model and --right-model are required for non-COS providers")
 	}
@@ -490,17 +592,33 @@ Options:`)
 	waitingForGoal := false
 	var state duelState
 	var reused bool
-	if requestedGoal == "" && !*resume {
-		if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
-			waitingForGoal = true
-		} else if statErr != nil {
-			return statErr
+	if preferredLeftID != "" {
+		if requestedGoal == "" {
+			if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
+				waitingForGoal = true
+			} else if statErr != nil {
+				return statErr
+			}
 		}
-	}
-	if !waitingForGoal {
-		state, reused, err = resolveDuelState(store, path, requestedGoal, *resume, *newDuel, leftCfg, rightCfg)
-		if err != nil {
-			return err
+		if !waitingForGoal {
+			state, reused, err = reconcileDuelStateForLeft(store, path, requestedGoal, preferredLeftID, leftCfg, rightCfg)
+			if err != nil {
+				return err
+			}
+		}
+	} else {
+		if requestedGoal == "" && !*resume {
+			if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
+				waitingForGoal = true
+			} else if statErr != nil {
+				return statErr
+			}
+		}
+		if !waitingForGoal {
+			state, reused, err = resolveDuelState(store, path, requestedGoal, *resume, *newDuel, leftCfg, rightCfg)
+			if err != nil {
+				return err
+			}
 		}
 	}
 	now := time.Now()
@@ -546,6 +664,64 @@ Options:`)
 	if err != nil {
 		return err
 	}
+	if activeLeftCfg.Provider == "cos" {
+		if lister, ok := leftProvider.(provider.ModelLister); ok {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			models, listErr := lister.ListModels(ctx)
+			cancel()
+			if listErr != nil {
+				return fmt.Errorf("resolve LEFT COS model: %w", listErr)
+			}
+			resolved := chooseAvailableModel(activeLeftCfg.Model, models, "gpt-5-6")
+			if resolved == "" {
+				return errors.New("LEFT COS provider offers no usable model")
+			}
+			activeLeftCfg.Model = resolved
+			if !waitingForGoal {
+				leftSession, loadErr := store.LoadSession(state.LeftID)
+				if loadErr != nil {
+					return loadErr
+				}
+				if _, saveErr := store.SaveSession(state.LeftID, resolved, activeLeftCfg.Provider, leftSession.Messages); saveErr != nil {
+					return saveErr
+				}
+				state.LeftProvider = activeLeftCfg.Provider
+				state.LeftModel = resolved
+				if saveErr := saveDuelState(path, state); saveErr != nil {
+					return saveErr
+				}
+			}
+		}
+	}
+	if activeRightCfg.Provider == "cos" {
+		if lister, ok := rightProvider.(provider.ModelLister); ok {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			models, listErr := lister.ListModels(ctx)
+			cancel()
+			if listErr != nil {
+				return fmt.Errorf("resolve RIGHT COS model: %w", listErr)
+			}
+			resolved := chooseAvailableModel(activeRightCfg.Model, models, "gpt-5-6")
+			if resolved == "" {
+				return errors.New("RIGHT COS provider offers no usable model")
+			}
+			activeRightCfg.Model = resolved
+			if !waitingForGoal {
+				rightSession, loadErr := store.LoadSession(state.RightID)
+				if loadErr != nil {
+					return loadErr
+				}
+				if _, saveErr := store.SaveSession(state.RightID, resolved, activeRightCfg.Provider, rightSession.Messages); saveErr != nil {
+					return saveErr
+				}
+				state.RightProvider = activeRightCfg.Provider
+				state.RightModel = resolved
+				if saveErr := saveDuelState(path, state); saveErr != nil {
+					return saveErr
+				}
+			}
+		}
+	}
 	terminalService := tuiPkg.NewTerminalService(abs)
 	defer terminalService.Close()
 	var stateMu sync.Mutex
@@ -554,16 +730,62 @@ Options:`)
 	var runDone chan struct{}
 	var runGeneration uint64
 	instructions := make(chan string, 128)
+	stateMu.Lock()
+	for _, note := range state.PendingOwner {
+		if strings.TrimSpace(note) != "" {
+			instructions <- note
+		}
+	}
+	stateMu.Unlock()
 	updates := make(chan duelUpdate, 128)
 	executeRun := func(ctx context.Context, generation uint64) {
 		stateMu.Lock()
 		runGoal, runLeftID, runRightID, runSummary := state.Goal, state.LeftID, state.RightID, recurringInitialSummary(state)
 		stateMu.Unlock()
+		leftSession, loadErr := store.LoadSession(runLeftID)
+		if loadErr != nil {
+			updates <- duelUpdate{done: true, err: fmt.Errorf("load LEFT session history: %w", loadErr)}
+			return
+		}
 		runLeftModel, runRightModel := activeLeftCfg.Model, activeRightCfg.Model
-		baseOptions := duel.Options{Goal: runGoal, LeftID: runLeftID, RightID: runRightID, LeftModel: runLeftModel, RightModel: runRightModel, LeftStreamer: leftProvider, RightStreamer: rightProvider, InitialSummary: runSummary, Instructions: instructions, RetryDelay: time.Minute, GoalFunc: func() string {
+		leftHistory := append([]provider.Message(nil), leftSession.Messages...)
+		baseOptions := duel.Options{Goal: runGoal, LeftID: runLeftID, RightID: runRightID, LeftModel: runLeftModel, RightModel: runRightModel, LeftStreamer: leftProvider, RightStreamer: rightProvider, LeftHistory: leftHistory, LeftRemoteHistory: activeLeftCfg.Provider == "cos", InitialSummary: runSummary, Instructions: instructions, RetryDelay: time.Minute, GoalFunc: func() string {
 			stateMu.Lock()
 			defer stateMu.Unlock()
 			return state.Goal
+		}, OnLeftExchange: func(round int, ownerNotes []string, prompt, response string) error {
+			persistedUser := prompt
+			if len(ownerNotes) > 0 {
+				persistedUser = strings.Join(ownerNotes, "\n")
+			}
+			leftHistory = append(leftHistory,
+				provider.Message{Role: provider.RoleUser, Content: persistedUser},
+				provider.Message{Role: provider.RoleAssistant, Content: response},
+			)
+			if _, saveErr := store.SaveSession(runLeftID, runLeftModel, activeLeftCfg.Provider, leftHistory); saveErr != nil {
+				return saveErr
+			}
+			if len(ownerNotes) > 0 {
+				stateMu.Lock()
+				if len(state.PendingOwner) >= len(ownerNotes) {
+					matches := true
+					for i := range ownerNotes {
+						if state.PendingOwner[i] != ownerNotes[i] {
+							matches = false
+							break
+						}
+					}
+					if matches {
+						state.PendingOwner = append([]string(nil), state.PendingOwner[len(ownerNotes):]...)
+					}
+				}
+				saveErr := saveDuelState(path, state)
+				stateMu.Unlock()
+				if saveErr != nil {
+					return saveErr
+				}
+			}
+			return nil
 		}, OnRoleStart: func(role string, round int) error {
 			stateMu.Lock()
 			shownRound := state.Rounds + 1
@@ -709,6 +931,19 @@ Options:`)
 		return leftSession.ID, rightSession.ID, nil
 	}
 	ui := newDuelUI(instructions, updates, run, cancelAndPersist, state.LeftID, state.RightID)
+	ui.setOwnerQueueHandler(func(note string) error {
+		stateMu.Lock()
+		defer stateMu.Unlock()
+		state.PendingOwner = append(state.PendingOwner, strings.TrimSpace(note))
+		return saveDuelState(path, state)
+	})
+	if !waitingForGoal {
+		leftSession, loadErr := store.LoadSession(state.LeftID)
+		if loadErr != nil {
+			return fmt.Errorf("load LEFT session for duel UI: %w", loadErr)
+		}
+		ui.setInitialLeftHistory(leftSession.Messages)
+	}
 	aux := tuiPkg.NewAuxiliaryWorkspace(abs, terminalService)
 	updateGoal := func(goal string) error {
 		goal = strings.TrimSpace(goal)
@@ -728,7 +963,7 @@ Options:`)
 	ui.setStopLoopHandler(cancelCurrentRun)
 	if waitingForGoal {
 		ui.setInitialGoalHandler(func(goal string) error {
-			created, createErr := createDuelState(store, path, goal, leftCfg, rightCfg)
+			created, createErr := createDuelStateWithLeft(store, path, goal, preferredLeftID, leftCfg, rightCfg)
 			if createErr != nil {
 				return createErr
 			}
@@ -757,7 +992,10 @@ Options:`)
 		return err
 	}
 	if ui.switchMode == "single" {
-		return &modeSwitchError{Mode: "single", CWD: abs}
+		stateMu.Lock()
+		leftID, leftProvider, leftModel := state.LeftID, state.LeftProvider, state.LeftModel
+		stateMu.Unlock()
+		return &modeSwitchError{Mode: "single", CWD: abs, SessionID: leftID, Provider: leftProvider, Model: leftModel}
 	}
 	return nil
 }

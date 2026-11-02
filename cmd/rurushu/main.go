@@ -62,9 +62,9 @@ func run(args []string) error {
 		}
 		switch switchErr.Mode {
 		case "single":
-			current = []string{"--cwd", switchErr.CWD}
+			current = []string{"--cwd", switchErr.CWD, "--resume", switchErr.SessionID, "--provider", switchErr.Provider, "--model", switchErr.Model}
 		case "duel":
-			current = []string{"duel", "--cwd", switchErr.CWD}
+			current = []string{"duel", "--cwd", switchErr.CWD, "--left-session", switchErr.SessionID, "--left-provider", switchErr.Provider, "--left-model", switchErr.Model}
 		default:
 			return err
 		}
@@ -72,8 +72,11 @@ func run(args []string) error {
 }
 
 type modeSwitchError struct {
-	Mode string
-	CWD  string
+	Mode      string
+	CWD       string
+	SessionID string
+	Provider  string
+	Model     string
 }
 
 func (e *modeSwitchError) Error() string { return "switch mode to " + e.Mode }
@@ -189,7 +192,29 @@ func runSingle(args []string) error {
 		return nil
 	}
 
-	model := strings.TrimSpace(*modelName)
+	modelExplicit := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "model" {
+			modelExplicit = true
+		}
+	})
+	model := resolveSingleModel(prov.ID(), *modelName, modelExplicit, os.Getenv("RURUSHU_MODEL"), os.Getenv("OPENAI_MODEL"), saved.Single.Model)
+	if prov.ID() == "cos" {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		models, listErr := prov.ListModels(ctx)
+		cancel()
+		if listErr != nil {
+			return fmt.Errorf("resolve COS model: %w", listErr)
+		}
+		resolved := chooseAvailableModel(model, models, "gpt-5-6")
+		if resolved == "" {
+			return errors.New("Chat On Steroids offers no usable model")
+		}
+		if resolved != model && strings.TrimSpace(model) != "" {
+			fmt.Fprintf(os.Stderr, "rurushu: COS model %q unavailable; using %q\n", model, resolved)
+		}
+		model = resolved
+	}
 	if model == "" && prov.ID() == "cos" {
 		model = "chatgpt-web"
 	}
@@ -275,7 +300,7 @@ func runSingle(args []string) error {
 		return rebuildAndReload(args, uiModel.SessionID())
 	}
 	if uiModel.ModeSwitchRequested() == "duel" {
-		return &modeSwitchError{Mode: "duel", CWD: absCWD}
+		return &modeSwitchError{Mode: "duel", CWD: absCWD, SessionID: uiModel.SessionID(), Provider: prov.ID(), Model: model}
 	}
 	return nil
 }
@@ -391,6 +416,34 @@ func firstNonEmpty(values ...string) string {
 	for _, value := range values {
 		if value = strings.TrimSpace(value); value != "" {
 			return value
+		}
+	}
+	return ""
+}
+
+func resolveSingleModel(providerID, parsedModel string, explicit bool, rurushuEnv, openAIEnv, singleModel string) string {
+	if providerID == "cos" && !explicit && strings.TrimSpace(rurushuEnv) == "" && strings.TrimSpace(openAIEnv) == "" && strings.TrimSpace(singleModel) == "" {
+		return "chatgpt-web"
+	}
+	return strings.TrimSpace(parsedModel)
+}
+
+func chooseAvailableModel(requested string, available []string, preferred string) string {
+	requested = strings.TrimSpace(requested)
+	preferred = strings.TrimSpace(preferred)
+	for _, model := range available {
+		if strings.TrimSpace(model) == requested && requested != "" {
+			return requested
+		}
+	}
+	for _, model := range available {
+		if strings.TrimSpace(model) == preferred && preferred != "" {
+			return preferred
+		}
+	}
+	for _, model := range available {
+		if model = strings.TrimSpace(model); model != "" {
+			return model
 		}
 	}
 	return ""

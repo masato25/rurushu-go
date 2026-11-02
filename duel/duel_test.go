@@ -98,20 +98,78 @@ func TestRunIsLeftFirstAndFeedsRightReplyBackToLeft(t *testing.T) {
 	if got := strings.Join(s.calls, ","); got != "left,right,left,right" {
 		t.Fatalf("call order=%s", got)
 	}
-	if !strings.Contains(s.requests[2].Messages[0].Content, "再檢查 migration 相容性。") {
-		t.Fatalf("RIGHT feedback not fed to LEFT: %s", s.requests[2].Messages[0].Content)
+	last := s.requests[2].Messages[len(s.requests[2].Messages)-1].Content
+	if !strings.Contains(last, "再檢查 migration 相容性。") {
+		t.Fatalf("RIGHT feedback not fed to LEFT: %s", last)
 	}
-	if got := s.requests[2].Messages[0].Content; got != "再檢查 migration 相容性。" {
+	if got := last; got != "再檢查 migration 相容性。" {
 		t.Fatalf("follow-up LEFT prompt should contain only RIGHT feedback, got %q", got)
 	}
-	if strings.Contains(s.requests[2].Messages[0].Content, "You are LEFT") || strings.Contains(s.requests[2].Messages[0].Content, "Goal:") {
-		t.Fatalf("follow-up LEFT prompt repeated bootstrap context: %q", s.requests[2].Messages[0].Content)
+	if strings.Contains(last, "You are LEFT") || strings.Contains(last, "Goal:") {
+		t.Fatalf("follow-up LEFT prompt repeated bootstrap context: %q", last)
 	}
 	if !strings.Contains(s.requests[1].Messages[0].Content, "LEFT completed implementation and tests.") {
 		t.Fatalf("LEFT final response not sent to RIGHT: %s", s.requests[1].Messages[0].Content)
 	}
 	if len(turns) != 4 || !strings.HasPrefix(turns[0], "left:1:") || !strings.HasPrefix(turns[1], "right:1:") {
 		t.Fatalf("turns=%v", turns)
+	}
+}
+
+func TestRunStatelessLeftCarriesExistingSingleHistoryAndPersistsExchange(t *testing.T) {
+	left := &scripted{outputs: []string{"continued work"}}
+	right := &scripted{outputs: []string{"DONE: ready"}}
+	history := []provider.Message{
+		{Role: provider.RoleUser, Content: "single question"},
+		{Role: provider.RoleAssistant, Content: "single answer"},
+	}
+	var gotPrompt, gotResponse string
+	_, err := Run(context.Background(), nil, Options{
+		Goal:          "continue",
+		LeftID:        "left",
+		RightID:       "right",
+		LeftStreamer:  left,
+		RightStreamer: right,
+		LeftHistory:   history,
+		OnLeftExchange: func(round int, ownerNotes []string, prompt, response string) error {
+			gotPrompt, gotResponse = prompt, response
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(left.requests) != 1 {
+		t.Fatalf("left requests=%d", len(left.requests))
+	}
+	msgs := left.requests[0].Messages
+	if len(msgs) != 3 || msgs[0].Content != "single question" || msgs[1].Content != "single answer" {
+		t.Fatalf("history not carried into LEFT request: %#v", msgs)
+	}
+	if gotPrompt == "" || gotResponse != "continued work" {
+		t.Fatalf("exchange prompt=%q response=%q", gotPrompt, gotResponse)
+	}
+}
+
+func TestRunRemoteHistoryLeftDoesNotReplayLocalTranscript(t *testing.T) {
+	left := &scripted{outputs: []string{"continued work"}}
+	right := &scripted{outputs: []string{"DONE: ready"}}
+	_, err := Run(context.Background(), nil, Options{
+		Goal:              "continue",
+		LeftID:            "left",
+		RightID:           "right",
+		LeftStreamer:      left,
+		RightStreamer:     right,
+		LeftRemoteHistory: true,
+		LeftHistory: []provider.Message{
+			{Role: provider.RoleUser, Content: "already remote"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(left.requests[0].Messages) != 1 || left.requests[0].Messages[0].Content == "already remote" {
+		t.Fatalf("remote history was replayed: %#v", left.requests[0].Messages)
 	}
 }
 
@@ -133,7 +191,7 @@ func TestRunCompactLeftFollowupIncludesOnlyNewOwnerInstructionAndFeedback(t *tes
 		t.Fatal(err)
 	}
 	want := "Owner instruction: NEW_OWNER_NOTE\n\nkeep going"
-	if got := s.requests[2].Messages[0].Content; got != want {
+	if got := s.requests[2].Messages[len(s.requests[2].Messages)-1].Content; got != want {
 		t.Fatalf("compact follow-up=%q want=%q", got, want)
 	}
 }
@@ -183,7 +241,7 @@ func TestRunRightReplyIsHardLimitedTo100UnicodeCharacters(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	prompt := s.requests[2].Messages[0].Content
+	prompt := s.requests[2].Messages[len(s.requests[2].Messages)-1].Content
 	if !strings.Contains(prompt, strings.Repeat("界", 100)) {
 		t.Fatalf("truncated feedback missing: %q", prompt)
 	}
@@ -223,7 +281,7 @@ func TestRunOwnerInstructionArrivingDuringLeftWaitsForNextLeft(t *testing.T) {
 	if strings.Contains(s.requests[1].Messages[0].Content, "OWNER_DURING_LEFT") {
 		t.Fatalf("RIGHT consumed owner instruction: %q", s.requests[1].Messages[0].Content)
 	}
-	if got := s.requests[2].Messages[0].Content; !strings.Contains(got, "OWNER_DURING_LEFT") || !strings.Contains(got, "review") {
+	if got := s.requests[2].Messages[len(s.requests[2].Messages)-1].Content; !strings.Contains(got, "OWNER_DURING_LEFT") || !strings.Contains(got, "review") {
 		t.Fatalf("next LEFT did not receive queued owner instruction and feedback: %q", got)
 	}
 }
@@ -266,7 +324,7 @@ func TestRunRecurringRunsLeftThenRightEachTickUntilDeadline(t *testing.T) {
 	if got := strings.Join(s.calls, ","); got != "left,right,left,right,left,right" {
 		t.Fatalf("calls=%s", got)
 	}
-	if got := s.requests[2].Messages[0].Content; got != "r1" {
+	if got := s.requests[2].Messages[len(s.requests[2].Messages)-1].Content; got != "r1" {
 		t.Fatalf("recurring follow-up LEFT prompt should be compact, got %q", got)
 	}
 }

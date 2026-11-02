@@ -15,6 +15,7 @@ import (
 	"charm.land/glamour/v2/styles"
 	"charm.land/lipgloss/v2"
 	"github.com/masato25/rurushu-go/duel"
+	"github.com/masato25/rurushu-go/provider"
 	"github.com/masato25/rurushu-go/tui"
 )
 
@@ -31,26 +32,30 @@ type duelUpdate struct {
 	active     bool
 }
 type duelUI struct {
-	width, height   int
-	work            viewport.Model
-	input           textarea.Model
-	workLines       []string
-	instructions    chan string
-	updates         chan duelUpdate
-	run             func()
-	cancel          context.CancelFunc
-	stopLoop        func()
-	stopped         bool
-	status          string
-	leftID, rightID string
-	modal           string
-	aux             *tui.AuxiliaryWorkspace
-	newSessions     func() (string, string, error)
-	setInitialGoal  func(goal string) error
-	waitingForGoal  bool
-	slashMatches    []tui.SlashCommand
-	slashMatchIndex int
-	switchMode      string
+	width, height    int
+	work             viewport.Model
+	input            textarea.Model
+	workLines        []string
+	instructions     chan string
+	updates          chan duelUpdate
+	run              func()
+	cancel           context.CancelFunc
+	stopLoop         func()
+	stopped          bool
+	running          bool
+	retrying         bool
+	restartAfterDone bool
+	status           string
+	leftID, rightID  string
+	modal            string
+	aux              *tui.AuxiliaryWorkspace
+	newSessions      func() (string, string, error)
+	queueOwner       func(string) error
+	setInitialGoal   func(goal string) error
+	waitingForGoal   bool
+	slashMatches     []tui.SlashCommand
+	slashMatchIndex  int
+	switchMode       string
 }
 
 type duelModalLayout struct {
@@ -87,6 +92,29 @@ func newDuelUI(instructions chan string, updates chan duelUpdate, run func(), ca
 func (m *duelUI) setAuxiliaryWorkspace(aux *tui.AuxiliaryWorkspace)      { m.aux = aux }
 func (m *duelUI) setNewSessionHandler(fn func() (string, string, error)) { m.newSessions = fn }
 func (m *duelUI) setStopLoopHandler(fn func())                           { m.stopLoop = fn }
+func (m *duelUI) setOwnerQueueHandler(fn func(string) error)             { m.queueOwner = fn }
+func (m *duelUI) setInitialLeftHistory(history []provider.Message) {
+	if len(history) == 0 {
+		return
+	}
+	m.workLines = append(m.workLines, lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#6ED6AA")).Render("● CONTINUED FROM SINGLE · LEFT SESSION"))
+	for _, message := range history {
+		content := strings.TrimSpace(message.Content)
+		if content == "" {
+			continue
+		}
+		label := ""
+		switch message.Role {
+		case provider.RoleUser:
+			label = "SINGLE · USER"
+		case provider.RoleAssistant:
+			label = "SINGLE · ASSISTANT"
+		default:
+			continue
+		}
+		m.appendLocalOutput(label, content)
+	}
+}
 func (m *duelUI) setInitialGoalHandler(fn func(goal string) error) {
 	m.setInitialGoal = fn
 	m.waitingForGoal = true
@@ -118,14 +146,27 @@ func (m *duelUI) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.work.SetContent(strings.Join(m.workLines, "\n\n"))
 	case duelUpdate:
 		if v.active {
+			m.running = true
+			m.retrying = false
 			m.status = fmt.Sprintf("%s 執行中 · ROUND %02d", strings.ToUpper(v.role), v.round)
 			return m, awaitDuelUpdate(m.updates)
 		}
 		if v.retry {
+			m.running = true
+			m.retrying = true
 			m.status = fmt.Sprintf("%s session 發生錯誤：%v · %s 後自動重試一次", strings.ToUpper(v.role), v.err, v.retryAfter)
 			return m, awaitDuelUpdate(m.updates)
 		}
 		if v.done {
+			m.running = false
+			m.retrying = false
+			if m.restartAfterDone {
+				m.restartAfterDone = false
+				m.stopped = false
+				m.status = "已收到主人指令，重新啟動 LEFT"
+				m.run()
+				return m, awaitDuelUpdate(m.updates)
+			}
 			// Notify the owner once when both agents request review.
 			// Use Bubble Tea's raw terminal output to avoid corrupting the TUI.
 			alert := v.err == nil && v.result.Status == "owner_review" && !m.stopped
@@ -270,18 +311,32 @@ func (m *duelUI) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 					m.run()
 					return m, awaitDuelUpdate(m.updates)
 				}
+				if m.queueOwner != nil {
+					if err := m.queueOwner(note); err != nil {
+						m.status = "保存主人指令失敗：" + err.Error()
+						return m, m.input.Focus()
+					}
+				}
 				select {
 				case m.instructions <- note:
 					m.appendOwnerInstruction(note)
-					m.status = fmt.Sprintf("主人指令已預排 · 待送 %d 則", len(m.instructions))
+					m.status = fmt.Sprintf("主人指令已保存並預排 · 待 LEFT 消費 %d 則", len(m.instructions))
 				default:
 					m.status = "指令佇列已滿，請稍後再試"
 				}
 				m.input.Reset()
 				m.updateSlashAutocomplete()
-				if m.stopped {
+				if m.retrying && m.stopLoop != nil {
+					m.restartAfterDone = true
+					m.stopLoop()
+					m.status = "已收到主人指令，停止舊 retry 後立即重啟 LEFT"
+					m.input.Reset()
+					m.updateSlashAutocomplete()
+					return m, awaitDuelUpdate(m.updates)
+				}
+				if !m.running {
 					m.stopped = false
-					m.status = "重試左右互搏中"
+					m.status = "已收到主人指令，立即啟動 LEFT"
 					m.run()
 					return m, awaitDuelUpdate(m.updates)
 				}
