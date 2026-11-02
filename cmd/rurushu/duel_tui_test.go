@@ -50,6 +50,9 @@ func TestDuelTUIQueuesMultipleInstructionsWhileRunning(t *testing.T) {
 	if got := len(notes); got != 2 {
 		t.Fatalf("queued instructions=%d want=2", got)
 	}
+	if !ui.restartAfterDone {
+		t.Fatal("running owner instruction should request restart if current run finishes before the next LEFT")
+	}
 	if view := ui.View().Content; !strings.Contains(view, "待 LEFT 消費 2 則") {
 		t.Fatalf("queue depth not visible in TUI: %q", view)
 	}
@@ -58,6 +61,46 @@ func TestDuelTUIQueuesMultipleInstructionsWhileRunning(t *testing.T) {
 	}
 	if got := <-notes; got != "second steering note" {
 		t.Fatalf("second queued instruction=%q", got)
+	}
+}
+
+func TestDuelTUIQueuedOwnerInstructionRestartsIfRightFinishesBeforeNextLeft(t *testing.T) {
+	notes := make(chan string, 4)
+	updates := make(chan duelUpdate, 4)
+	runs := 0
+	ui := newDuelUI(notes, updates, func() { runs++ }, func() {})
+	ui.running = true
+	ui.input.SetValue("inspect the skipped candidate")
+	ui.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if !ui.restartAfterDone {
+		t.Fatal("queued owner instruction did not arm restart")
+	}
+	_, cmd := ui.Update(duelUpdate{done: true, result: duel.Result{Status: "owner_review"}})
+	if runs != 1 || ui.restartAfterDone {
+		t.Fatalf("runs=%d restart=%v", runs, ui.restartAfterDone)
+	}
+	if cmd == nil {
+		t.Fatal("expected update waiter after automatic LEFT restart")
+	}
+}
+
+func TestDuelTUIQueuedOwnerInstructionDoesNotRestartAfterNextLeftStarts(t *testing.T) {
+	notes := make(chan string, 4)
+	runs := 0
+	ui := newDuelUI(notes, make(chan duelUpdate, 4), func() { runs++ }, func() {})
+	ui.running = true
+	ui.input.SetValue("inspect the skipped candidate")
+	ui.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if !ui.restartAfterDone {
+		t.Fatal("queued owner instruction did not arm restart")
+	}
+	ui.Update(duelUpdate{role: "left", round: 16, active: true})
+	if ui.restartAfterDone {
+		t.Fatal("restart remained armed after the next LEFT started")
+	}
+	ui.Update(duelUpdate{done: true, result: duel.Result{Status: "owner_review"}})
+	if runs != 0 {
+		t.Fatalf("unexpected duplicate restart: runs=%d", runs)
 	}
 }
 

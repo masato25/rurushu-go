@@ -172,6 +172,12 @@ func (m *duelUI) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if v.active {
 			m.running = true
 			m.retrying = false
+			if strings.EqualFold(v.role, "left") {
+				// A queued owner instruction gets drained immediately after LEFT
+				// starts. Reaching the next LEFT therefore means no forced
+				// restart is needed if the current run later completes.
+				m.restartAfterDone = false
+			}
 			m.status = fmt.Sprintf("%s 執行中 · ROUND %02d", strings.ToUpper(v.role), v.round)
 			return m, awaitDuelUpdate(m.updates)
 		}
@@ -345,6 +351,9 @@ func (m *duelUI) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				case m.instructions <- note:
 					m.appendOwnerInstruction(note)
 					m.status = fmt.Sprintf("主人指令已保存並預排 · 待 LEFT 消費 %d 則", len(m.instructions))
+					if m.running {
+						m.restartAfterDone = true
+					}
 				default:
 					m.status = "指令佇列已滿，請稍後再試"
 				}
