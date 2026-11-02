@@ -293,13 +293,12 @@ Goal: %s
 LEFT's final response:
 %s
 
-Reply directly to LEFT with only the most useful reaction, correction, question, or suggestion for what it should do next. Do not take over planning or execution. Keep the entire reply within 100 Unicode characters. No JSON, no markdown wrapper. If the task is genuinely ready for owner review, begin with "DONE:" and briefly say why.`, goal, leftText)
-		rightMaxTokens := 96
+Reply directly to LEFT with one high-density decision. State the decision and exact next action. Add only the minimum rationale needed to make the decision clear. Do not restate LEFT's work, summarize background, brainstorm alternatives, add filler, or take over execution. Keep it concise, but do not truncate a necessary sentence. No JSON, no markdown wrapper. If the task is genuinely ready for owner review, begin with "DONE:" and briefly say why.`, goal, leftText)
+		rightMaxTokens := 256
 		rightText, err := callTextWithRetry(ctx, rightStreamer, o.RightID, roleModel(o.RightModel), rightPrompt, "right", round, &rightMaxTokens, o)
 		if err != nil {
 			return result, fmt.Errorf("right round %d: %w", round, err)
 		}
-		rightText = truncateRunes(rightText, 100)
 		rightTurn := Turn{Action: "feedback", Summary: rightText, Content: rightText}
 		if o.OnTurn != nil {
 			if err := o.OnTurn("right", round, rightTurn); err != nil {
@@ -416,13 +415,12 @@ Goal: %s
 LEFT's final response:
 %s
 
-Reply directly to LEFT with the single most useful reaction/correction/suggestion. Do not take over execution. Maximum 100 Unicode characters. No JSON. If ready for owner review, begin with "DONE:".`, goal, leftText)
-		rightMaxTokens := 96
+Reply directly to LEFT with one high-density decision. State the decision and exact next action. Add only the minimum rationale needed to make the decision clear. Do not restate LEFT's work, summarize background, brainstorm alternatives, add filler, or take over execution. Keep it concise, but do not truncate a necessary sentence. No JSON. If ready for owner review, begin with "DONE:".`, goal, leftText)
+		rightMaxTokens := 256
 		rightText, err := callTextWithRetry(ctx, rightStreamer, o.RightID, roleModel(o.RightModel), rightPrompt, "right", round, &rightMaxTokens, o.Options)
 		if err != nil {
 			return result, fmt.Errorf("right round %d: %w", round, err)
 		}
-		rightText = truncateRunes(rightText, 100)
 		rightTurn := Turn{Action: "feedback", Summary: rightText, Content: rightText}
 		if o.OnTurn != nil {
 			if err := o.OnTurn("right", round, rightTurn); err != nil {

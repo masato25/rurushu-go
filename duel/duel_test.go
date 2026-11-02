@@ -234,7 +234,54 @@ func TestRunSupportsIndependentRoleStreamersAndModels(t *testing.T) {
 	}
 }
 
-func TestRunRightReplyIsHardLimitedTo100UnicodeCharacters(t *testing.T) {
+func TestRightDecisionIsNotHardTruncated(t *testing.T) {
+	left := &scripted{outputs: []string{"implemented"}}
+	rightText := "Proceed with the next eligible candidate and instrument detection-to-submit latency, preconfirm success, and inclusion position before further optimization."
+	right := &scripted{outputs: []string{rightText}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	turns := 0
+	_, err := Run(ctx, nil, Options{
+		Goal:          "task",
+		LeftID:        "left-session",
+		RightID:       "right-session",
+		LeftStreamer:  left,
+		RightStreamer: right,
+		OnTurn: func(role string, round int, turn Turn) error {
+			if role == "right" {
+				turns++
+				if turn.Summary != rightText {
+					t.Fatalf("RIGHT summary was truncated: %q", turn.Summary)
+				}
+				cancel()
+			}
+			return nil
+		},
+	})
+	if err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	if turns != 1 {
+		t.Fatalf("right turns=%d", turns)
+	}
+	if len(right.requests) != 1 {
+		t.Fatalf("right requests=%d", len(right.requests))
+	}
+	if right.requests[0].MaxTokens == nil || *right.requests[0].MaxTokens != 256 {
+		t.Fatalf("RIGHT MaxTokens=%v want=256", right.requests[0].MaxTokens)
+	}
+	prompt := right.requests[0].Messages[0].Content
+	if strings.Contains(prompt, "100 Unicode") || strings.Contains(prompt, "Maximum 100") {
+		t.Fatalf("RIGHT prompt still contains hard length limit: %q", prompt)
+	}
+	for _, want := range []string{"one high-density decision", "exact next action", "do not truncate a necessary sentence"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("RIGHT prompt missing %q: %q", want, prompt)
+		}
+	}
+}
+
+func TestRunRightReplyPreservesCompleteDecisionBeyond100UnicodeCharacters(t *testing.T) {
 	long := strings.Repeat("界", 130)
 	s := &scripted{outputs: []string{"work one", long, "work two", "DONE: finished"}}
 	_, err := Run(context.Background(), s, Options{Goal: "task", LeftID: "left", RightID: "right"})
@@ -242,11 +289,8 @@ func TestRunRightReplyIsHardLimitedTo100UnicodeCharacters(t *testing.T) {
 		t.Fatal(err)
 	}
 	prompt := s.requests[2].Messages[len(s.requests[2].Messages)-1].Content
-	if !strings.Contains(prompt, strings.Repeat("界", 100)) {
-		t.Fatalf("truncated feedback missing: %q", prompt)
-	}
-	if strings.Contains(prompt, strings.Repeat("界", 101)) {
-		t.Fatal("feedback exceeded 100 runes")
+	if !strings.Contains(prompt, long) {
+		t.Fatalf("complete RIGHT decision was not preserved: %q", prompt)
 	}
 }
 
