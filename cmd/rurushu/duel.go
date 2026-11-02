@@ -945,6 +945,10 @@ Options:`)
 		ui.setInitialLeftHistory(leftSession.Messages)
 	}
 	aux := tuiPkg.NewAuxiliaryWorkspace(abs, terminalService)
+	aux.SetContextInfo(
+		fmt.Sprintf("LEFT  · %s / %s", activeLeftCfg.Provider, activeLeftCfg.Model),
+		fmt.Sprintf("RIGHT · %s / %s", activeRightCfg.Provider, activeRightCfg.Model),
+	)
 	updateGoal := func(goal string) error {
 		goal = strings.TrimSpace(goal)
 		if goal == "" {

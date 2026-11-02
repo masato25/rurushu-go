@@ -67,3 +67,24 @@ func TestAuxiliaryWorkspaceF2IncludesDuelGoal(t *testing.T) {
 		t.Fatalf("F2 goal missing: %q", view.Content)
 	}
 }
+
+func TestAuxiliaryWorkspaceF2IncludesContextInfo(t *testing.T) {
+	root := t.TempDir()
+	aux := NewAuxiliaryWorkspace(root, NewTerminalService(root))
+	aux.SetContextInfo(
+		"LEFT  · cos / gpt-5-6",
+		"RIGHT · ollama / hf.co/unsloth/Qwen3.8-27B-GGUF:UD-IQ2_M",
+	)
+	aux.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	aux.Update(tea.KeyPressMsg{Code: tea.KeyF2})
+	view, ok := aux.View()
+	if !ok {
+		t.Fatal("F2 setup view not active")
+	}
+	content := view.Content
+	for _, want := range []string{"Active duel roles", "LEFT", "cos / gpt-5-6", "RIGHT", "ollama / hf.co/unsloth/Qwen3.8-27B-GGUF:UD-IQ2_M"} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("F2 setup missing %q: %q", want, content)
+		}
+	}
+}

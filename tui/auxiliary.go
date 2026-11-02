@@ -21,6 +21,7 @@ type AuxiliaryWorkspace struct {
 	errText         string
 	goal            string
 	goalSave        func(string) error
+	contextInfo     []string
 }
 
 func NewAuxiliaryWorkspace(cwd string, service *TerminalService) *AuxiliaryWorkspace {
@@ -33,6 +34,10 @@ func NewAuxiliaryWorkspace(cwd string, service *TerminalService) *AuxiliaryWorks
 func (a *AuxiliaryWorkspace) SetGoalEditor(goal string, save func(string) error) {
 	a.goal = strings.TrimSpace(goal)
 	a.goalSave = save
+}
+
+func (a *AuxiliaryWorkspace) SetContextInfo(lines ...string) {
+	a.contextInfo = append(a.contextInfo[:0], lines...)
 }
 
 func (a *AuxiliaryWorkspace) Active() bool {
@@ -148,6 +153,7 @@ func (a *AuxiliaryWorkspace) Update(msg tea.Msg) (bool, tea.Cmd) {
 			}
 			a.setup = NewSetupModel(cfg)
 			a.setup.embedded = true
+			a.setup.SetContextInfo(a.contextInfo...)
 			if a.goalSave != nil {
 				a.setup.EnableGoalEditor(a.goal, func(goal string) error {
 					if err := a.goalSave(goal); err != nil {

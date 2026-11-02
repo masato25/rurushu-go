@@ -27,6 +27,16 @@ type SetupModel struct {
 	goalSave    func(string) error
 	watchEditor *setupWatchEditor
 	watchTab    bool
+	contextInfo []string
+}
+
+func (m *SetupModel) SetContextInfo(lines ...string) {
+	m.contextInfo = m.contextInfo[:0]
+	for _, line := range lines {
+		if line = strings.TrimSpace(line); line != "" {
+			m.contextInfo = append(m.contextInfo, line)
+		}
+	}
 }
 
 type setupWatchEditor struct {
@@ -338,6 +348,15 @@ func (m *SetupModel) View() tea.View {
 	b.WriteString(statusNameStyle.Render("rurushu setup"))
 	b.WriteString("\n")
 	b.WriteString(mutedStyle.Render("Configure the standalone terminal client. API key is stored locally with file mode 0600."))
+	if len(m.contextInfo) > 0 {
+		b.WriteString("\n\n")
+		b.WriteString(lipgloss.NewStyle().Bold(true).Render("Active duel roles"))
+		b.WriteString("\n")
+		for _, line := range m.contextInfo {
+			b.WriteString(mutedStyle.Render(line))
+			b.WriteString("\n")
+		}
+	}
 	if m.watchEditor != nil {
 		b.WriteString("\n" + mutedStyle.Render("Ctrl+W: Scheduled tasks (view, edit, stop)"))
 	}
