@@ -54,6 +54,7 @@ type duelUI struct {
 	slashMatches     []tui.SlashCommand
 	slashMatchIndex  int
 	switchMode       string
+	initialTail      bool
 }
 
 type duelModalLayout struct {
@@ -96,6 +97,7 @@ func (m *duelUI) setInitialLeftHistory(history []provider.Message) {
 		return
 	}
 	m.workLines = append(m.workLines, lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#6ED6AA")).Render("● CONTINUED FROM SINGLE · LEFT SESSION"))
+	m.initialTail = true
 	for _, message := range history {
 		content := strings.TrimSpace(message.Content)
 		if content == "" {
@@ -128,6 +130,7 @@ func (m *duelUI) setInitialRightHistory(history []duelPersistedTurn) {
 		m.workLines = append(m.workLines, entry)
 	}
 	if len(history) > 0 {
+		m.initialTail = true
 		m.work.SetContent(strings.Join(m.workLines, "\n\n"))
 		m.work.GotoBottom()
 	}
@@ -161,6 +164,10 @@ func (m *duelUI) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.work.SetWidth(max(16, m.width-2))
 		m.work.SetHeight(h)
 		m.work.SetContent(strings.Join(m.workLines, "\n\n"))
+		if m.initialTail {
+			m.work.GotoBottom()
+			m.initialTail = false
+		}
 	case duelUpdate:
 		if v.active {
 			m.running = true

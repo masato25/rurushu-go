@@ -256,18 +256,33 @@ func TestDuelInitialLeftHistoryRendersMarkdownLikeSingleChat(t *testing.T) {
 
 func TestDuelInitialRightHistoryIsRestoredToTimeline(t *testing.T) {
 	ui := newDuelUI(make(chan string, 4), make(chan duelUpdate, 4), func() {}, func() {})
-	ui.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	ui.setInitialRightHistory([]duelPersistedTurn{{
 		Round:   6,
 		Time:    time.Date(2026, 11, 2, 10, 52, 0, 0, time.Local),
 		Action:  "feedback",
 		Summary: "Proceed with instrumentation before further optimization.",
 	}})
+	ui.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	plain := ansi.Strip(ui.View().Content)
 	for _, want := range []string{"RIGHT", "ROUND 06", "2026-11-02 10:52", "Proceed with instrumentation"} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("restored RIGHT timeline missing %q: %q", want, plain)
 		}
+	}
+}
+
+func TestDuelInitialHistoryStaysAtTailAfterFirstWindowSize(t *testing.T) {
+	ui := newDuelUI(make(chan string, 4), make(chan duelUpdate, 4), func() {}, func() {})
+	var history []provider.Message
+	for i := 0; i < 20; i++ {
+		history = append(history, provider.Message{Role: provider.RoleAssistant, Content: fmt.Sprintf("old response %02d", i)})
+	}
+	ui.setInitialLeftHistory(history)
+	ui.setInitialRightHistory([]duelPersistedTurn{{Round: 9, Action: "feedback", Summary: "RIGHT TAIL SENTINEL"}})
+	ui.Update(tea.WindowSizeMsg{Width: 80, Height: 16})
+	plain := ansi.Strip(ui.View().Content)
+	if !strings.Contains(plain, "RIGHT TAIL SENTINEL") {
+		t.Fatalf("first WindowSize moved viewport away from restored RIGHT tail: %q", plain)
 	}
 }
 
