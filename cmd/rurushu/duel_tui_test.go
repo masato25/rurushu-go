@@ -227,10 +227,29 @@ func TestDuelInitialLeftHistoryIsVisible(t *testing.T) {
 		{Role: provider.RoleUser, Content: "single question"},
 		{Role: provider.RoleAssistant, Content: "single answer"},
 	})
-	view := ui.View().Content
+	view := ansi.Strip(ui.View().Content)
 	for _, want := range []string{"CONTINUED FROM SINGLE", "single question", "single answer"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view missing %q: %q", want, view)
+		}
+	}
+}
+
+func TestDuelInitialLeftHistoryRendersMarkdownLikeSingleChat(t *testing.T) {
+	ui := newDuelUI(make(chan string, 4), make(chan duelUpdate, 4), func() {}, func() {})
+	ui.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	ui.setInitialLeftHistory([]provider.Message{
+		{Role: provider.RoleAssistant, Content: "# Result\n**bold** and `code`\n- item"},
+	})
+	plain := ansi.Strip(ui.View().Content)
+	for _, want := range []string{"Result", "bold", "code", "item"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("rendered history missing %q: %q", want, plain)
+		}
+	}
+	for _, raw := range []string{"# Result", "**bold**"} {
+		if strings.Contains(plain, raw) {
+			t.Fatalf("history still contains raw markdown %q: %q", raw, plain)
 		}
 	}
 }

@@ -11,8 +11,6 @@ import (
 	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
-	"charm.land/glamour/v2"
-	"charm.land/glamour/v2/styles"
 	"charm.land/lipgloss/v2"
 	"github.com/masato25/rurushu-go/duel"
 	"github.com/masato25/rurushu-go/provider"
@@ -112,7 +110,7 @@ func (m *duelUI) setInitialLeftHistory(history []provider.Message) {
 		default:
 			continue
 		}
-		m.appendLocalOutput(label, content)
+		m.appendLocalMarkdownOutput(label, content)
 	}
 }
 func (m *duelUI) setInitialGoalHandler(fn func(goal string) error) {
@@ -559,6 +557,11 @@ func (m *duelUI) appendLocalOutput(title, content string) {
 	m.work.GotoBottom()
 }
 
+func (m *duelUI) appendLocalMarkdownOutput(title, content string) {
+	width := max(20, m.work.Width()-4)
+	m.appendLocalOutput(title, tui.RenderMarkdown(strings.TrimSpace(content), width))
+}
+
 func renderDuelTurn(update duelUpdate, width int) string {
 	color := duelActionColor(update.turn.Action)
 	role := strings.ToUpper(strings.TrimSpace(update.role))
@@ -575,12 +578,7 @@ func renderDuelTurn(update duelUpdate, width int) string {
 	if evidence := strings.TrimSpace(update.turn.Evidence); evidence != "" {
 		markdown += "\n\n**Evidence**\n\n" + evidence
 	}
-	renderer, err := glamour.NewTermRenderer(glamour.WithStyles(styles.DarkStyleConfig), glamour.WithWordWrap(max(1, width-5)))
-	if err == nil {
-		if rendered, renderErr := renderer.Render(markdown); renderErr == nil {
-			markdown = strings.TrimSpace(rendered)
-		}
-	}
+	markdown = tui.RenderMarkdown(markdown, max(20, width-5))
 	return label + "\n" + divider + "\n" + markdown
 }
 

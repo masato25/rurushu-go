@@ -958,6 +958,12 @@ func renderMarkdown(content string, width int) string {
 	return strings.TrimRight(markdownOSC8.ReplaceAllString(rendered, ""), "\n")
 }
 
+// RenderMarkdown exposes the same markdown renderer used by the single-chat
+// transcript so alternate frontends can keep formatting identical.
+func RenderMarkdown(content string, width int) string {
+	return renderMarkdown(content, width)
+}
+
 var markdownOSC8 = regexp.MustCompile(`\x1b\]8;[^\x07\x1b]*(?:\x07|\x1b\\)`)
 
 // COS may transmit ChatGPT's rich link tokens rather than Markdown links.
