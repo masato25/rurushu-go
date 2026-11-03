@@ -1,0 +1,90 @@
+package tui
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	tea "charm.land/bubbletea/v2"
+)
+
+func TestAuxiliaryWorkspaceFunctionKeyPanels(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("# test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	service := NewTerminalService(root)
+	defer service.Close()
+	aux := NewAuxiliaryWorkspace(root, service)
+	aux.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+
+	for _, test := range []struct {
+		key      rune
+		contains string
+	}{
+		{tea.KeyF2, "rurushu setup"},
+		{tea.KeyF3, "Code Review"},
+		{tea.KeyF5, "Files"},
+	} {
+		handled, _ := aux.Update(tea.KeyPressMsg(tea.Key{Code: test.key}))
+		if !handled || !aux.Active() {
+			t.Fatalf("%v did not activate auxiliary workspace", test.key)
+		}
+		view, ok := aux.View()
+		if !ok || !strings.Contains(view.Content, test.contains) {
+			t.Fatalf("%v view missing %q: %q", test.key, test.contains, view.Content)
+		}
+		aux.Update(tea.KeyPressMsg(tea.Key{Code: test.key}))
+		if aux.Active() {
+			t.Fatalf("%v did not close its panel", test.key)
+		}
+	}
+
+	handled, cmd := aux.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyF4}))
+	if !handled || !aux.Active() || cmd == nil {
+		t.Fatal("F4 did not open shared terminal workspace")
+	}
+	view, ok := aux.View()
+	if !ok || !strings.Contains(view.Content, "Sessions") {
+		t.Fatalf("F4 terminal view missing: %q", view.Content)
+	}
+	aux.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyF4}))
+	if aux.Active() {
+		t.Fatal("F4 did not hide terminal workspace")
+	}
+}
+
+func TestAuxiliaryWorkspaceF2IncludesDuelGoal(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	root := t.TempDir()
+	aux := NewAuxiliaryWorkspace(root, NewTerminalService(root))
+	aux.SetGoalEditor("ship the feature", func(string) error { return nil })
+	aux.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	aux.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyF2}))
+	view, ok := aux.View()
+	if !ok || !strings.Contains(view.Content, "Duel goal") || !strings.Contains(view.Content, "ship the feature") {
+		t.Fatalf("F2 goal missing: %q", view.Content)
+	}
+}
+
+func TestAuxiliaryWorkspaceF2IncludesContextInfo(t *testing.T) {
+	root := t.TempDir()
+	aux := NewAuxiliaryWorkspace(root, NewTerminalService(root))
+	aux.SetContextInfo(
+		"LEFT  · cos / gpt-5-6",
+		"RIGHT · ollama / hf.co/unsloth/Qwen3.8-27B-GGUF:UD-IQ2_M",
+	)
+	aux.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	aux.Update(tea.KeyPressMsg{Code: tea.KeyF2})
+	view, ok := aux.View()
+	if !ok {
+		t.Fatal("F2 setup view not active")
+	}
+	content := view.Content
+	for _, want := range []string{"Active duel roles", "LEFT", "cos / gpt-5-6", "RIGHT", "ollama / hf.co/unsloth/Qwen3.8-27B-GGUF:UD-IQ2_M"} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("F2 setup missing %q: %q", want, content)
+		}
+	}
+}

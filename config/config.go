@@ -12,13 +12,28 @@ import (
 const DefaultSystemPrompt = "You are Rurushu, a concise terminal assistant. Use only capabilities actually provided by the host application."
 
 type Config struct {
-	BaseURL          string  `json:"base_url,omitempty"`
-	APIKey           string  `json:"api_key,omitempty"`
-	Model            string  `json:"model,omitempty"`
-	SystemPrompt     string  `json:"system_prompt,omitempty"`
-	MaxSteps         int     `json:"max_steps,omitempty"`
-	MaxContextTokens int     `json:"max_context_tokens,omitempty"`
-	CompactAt        float64 `json:"compact_at,omitempty"`
+	BaseURL          string     `json:"base_url,omitempty"`
+	APIKey           string     `json:"api_key,omitempty"`
+	Model            string     `json:"model,omitempty"`
+	ReasoningEffort  string     `json:"reasoning_effort,omitempty"`
+	SystemPrompt     string     `json:"system_prompt,omitempty"`
+	MaxSteps         int        `json:"max_steps,omitempty"`
+	MaxContextTokens int        `json:"max_context_tokens,omitempty"`
+	CompactAt        float64    `json:"compact_at,omitempty"`
+	AutoApprove      bool       `json:"auto_approve,omitempty"`
+	Single           RoleConfig `json:"single,omitempty"`
+	Duel             DuelConfig `json:"duel,omitempty"`
+}
+
+type RoleConfig struct {
+	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model,omitempty"`
+}
+
+type DuelConfig struct {
+	Left      RoleConfig `json:"left,omitempty"`
+	Right     RoleConfig `json:"right,omitempty"`
+	OllamaURL string     `json:"ollama_url,omitempty"`
 }
 
 func Defaults() Config {
@@ -57,6 +72,32 @@ func Load() (Config, error) {
 	}
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return Config{}, fmt.Errorf("decode config %q: %w", path, err)
+	}
+	applyDefaults(&cfg)
+	return cfg, nil
+}
+
+// LoadForDir overlays project-local .rurushu/config.json values on top of the
+// global config. Missing project keys preserve the global values.
+func LoadForDir(cwd string) (Config, error) {
+	cfg, err := Load()
+	if err != nil {
+		return Config{}, err
+	}
+	cwd = strings.TrimSpace(cwd)
+	if cwd == "" {
+		return cfg, nil
+	}
+	path := filepath.Join(cwd, ".rurushu", "config.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return cfg, nil
+		}
+		return Config{}, fmt.Errorf("read project config: %w", err)
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return Config{}, fmt.Errorf("decode project config %q: %w", path, err)
 	}
 	applyDefaults(&cfg)
 	return cfg, nil

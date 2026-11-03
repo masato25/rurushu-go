@@ -4,13 +4,18 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"regexp"
 	"strings"
 	"time"
 
 	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/glamour/v2"
 	"charm.land/lipgloss/v2"
+	rurushuconfig "github.com/masato25/rurushu-go/config"
+	"github.com/trentkm/spanreed"
+
 	"github.com/masato25/rurushu-go/jobs"
 	"github.com/masato25/rurushu-go/permission"
 	"github.com/masato25/rurushu-go/projectstate"
@@ -24,13 +29,24 @@ type Message struct {
 	Activity *activityEntry
 }
 
+type markdownCacheEntry struct {
+	source   string
+	width    int
+	rendered string
+}
+
 type Streamer interface {
 	Stream(context.Context, provider.CompletionRequest) (<-chan provider.StreamEvent, error)
 }
 
 type Model struct {
-	width  int
-	height int
+	visibleHistoryLimit  int
+	lastTranscriptRender time.Time
+	transcriptDirty      bool
+	reloadRequested      bool
+	modeSwitchRequested  string
+	width                int
+	height               int
 
 	frame frameLayout
 
@@ -57,6 +73,8 @@ type Model struct {
 	streamReasoningText string
 	activityMode        ActivityMode
 	thinkingVisible     bool
+	progressFrame       int
+	markdownCache       map[int]markdownCacheEntry
 	slashCommands       map[string]SlashCommand
 	slashMatches        []SlashCommand
 	slashMatchIndex     int
@@ -67,7 +85,24 @@ type Model struct {
 	sessionStore        *projectstate.Store
 	sessionID           string
 	sessionSaveError    string
+	setup               *SetupModel
+	review              *reviewModel
+	browser             *fileBrowser
+	terminal            *terminalWorkspace
+	terminalService     *TerminalService
+	terminalVisible     bool
+	queuedInputs        []string
+	pastedContent       map[string]string
+	pasteCounter        int
+	watch               watchSchedule
+	watchQueued         bool
+	watchRunPending     bool
+	watchFileModTime    time.Time
+	watchFileSize       int64
 }
+
+func (m *Model) ReloadRequested() bool       { return m.reloadRequested }
+func (m *Model) ModeSwitchRequested() string { return m.modeSwitchRequested }
 
 type streamStartedMsg struct {
 	id     uint64
@@ -82,12 +117,30 @@ type streamEventMsg struct {
 	stream <-chan provider.StreamEvent
 }
 
+type queuedSubmitMsg struct{}
+
+type watchTickMsg struct {
+	generation uint64
+}
+
+type watchSyncMsg struct{}
+
 type permissionPromptMsg struct {
 	prompt *permission.Prompt
 	closed bool
 }
 
 type jobRefreshMsg struct{ running int }
+
+type progressTickMsg struct{}
+
+const streamRenderInterval = 100 * time.Millisecond
+
+var progressFrames = []string{"◐", "◓", "◑", "◒"}
+
+func progressTick() tea.Cmd {
+	return tea.Tick(750*time.Millisecond, func(time.Time) tea.Msg { return progressTickMsg{} })
+}
 
 const (
 	roleUser      = "user"
@@ -126,12 +179,14 @@ func NewWithStreamer(modelName, providerID string, llm Streamer) *Model {
 	vp.MouseWheelEnabled = true
 
 	m := &Model{
-		viewport:     vp,
-		composer:     composer,
-		modelName:    modelName,
-		provider:     providerID,
-		llm:          llm,
-		activityMode: ActivityNormal,
+		visibleHistoryLimit: 120,
+		viewport:            vp,
+		composer:            composer,
+		modelName:           modelName,
+		provider:            providerID,
+		llm:                 llm,
+		activityMode:        ActivityNormal,
+		pastedContent:       make(map[string]string),
 	}
 	m.registerDefaultSlashCommands()
 	m.refreshConversation()
@@ -175,7 +230,13 @@ func (m *Model) SetActivityMode(mode ActivityMode) {
 }
 
 func (m *Model) Init() tea.Cmd {
-	cmds := []tea.Cmd{m.composer.Focus()}
+	cmds := []tea.Cmd{m.composer.Focus(), progressTick()}
+	if m.sessionStore != nil {
+		cmds = append(cmds, watchSyncCmd())
+	}
+	if cmd := m.watchTimerCmd(); cmd != nil {
+		cmds = append(cmds, cmd)
+	}
 	if m.permissionRequests != nil {
 		cmds = append(cmds, waitForPermission(m.permissionRequests))
 	}
@@ -189,10 +250,74 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
+	case spanreed.FrameMsg:
+		if m.terminal != nil {
+			return m, m.terminal.update(msg)
+		}
+		return m, nil
+	case tea.MouseWheelMsg:
+		if m.browser != nil {
+			m.browser.wheel(msg.Button)
+			return m, nil
+		}
+		if m.terminalVisible && m.terminal != nil {
+			return m, m.terminal.update(msg)
+		}
+		if m.review != nil {
+			return m, m.review.wheel(msg.Button)
+		}
+		if m.setup != nil {
+			_, cmd := m.setup.Update(msg)
+			return m, cmd
+		}
+	case reviewFilesMsg:
+		if m.review == nil || msg.generation != m.review.generation {
+			return m, nil
+		}
+		m.review.loading = false
+		if msg.err != nil {
+			m.review.err = msg.err.Error()
+			return m, nil
+		}
+		m.review.files = msg.files
+		m.review.commits = msg.commits
+		m.review.commitError = msg.commitError
+		m.review.selected = min(m.review.selected, max(0, len(msg.files)-1))
+		return m, m.review.loadDiff()
+	case reviewDiffMsg:
+		if m.review == nil || msg.generation != m.review.generation {
+			return m, nil
+		}
+		m.review.loading = false
+		if msg.err != nil {
+			m.review.err = msg.err.Error()
+			return m, nil
+		}
+		m.review.diff = nil
+		if msg.diff != "" {
+			m.review.diff = strings.Split(strings.TrimSuffix(msg.diff, "\n"), "\n")
+		}
+		return m, nil
+	case progressTickMsg:
+		if m.transcriptDirty {
+			m.flushTranscript()
+		}
+		if m.streaming {
+			m.progressFrame = (m.progressFrame + 1) % len(progressFrames)
+			// The status line animates independently; rebuilding the whole
+			// transcript every tick scales badly with conversation length.
+		}
+		return m, progressTick()
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
 		m.layout()
+		if m.terminalVisible && m.terminal != nil {
+			return m, m.terminal.resize(m.width, m.height)
+		}
+		if m.setup != nil {
+			m.setup.Update(msg)
+		}
 		return m, nil
 
 	case streamStartedMsg:
@@ -236,13 +361,20 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if !msg.ok {
+			m.watchRunStatus("failed", "stream closed without completion")
 			m.finishStream()
-			return m, nil
+			return m, m.nextQueuedSubmitCmd()
 		}
 		follow := m.followStream
 		offset := m.viewport.YOffset()
 		done := m.applyStreamEvent(msg.event)
-		m.refreshConversation()
+		if done || msg.event.Type == provider.EventError || msg.event.Type == provider.EventToolStart || msg.event.Type == provider.EventToolResult || time.Since(m.lastTranscriptRender) >= streamRenderInterval {
+			m.refreshConversation()
+			m.lastTranscriptRender = time.Now()
+			m.transcriptDirty = false
+		} else {
+			m.transcriptDirty = true
+		}
 		if follow {
 			m.viewport.GotoBottom()
 		} else {
@@ -250,11 +382,137 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.viewport.SetYOffset(min(offset, maxOffset))
 		}
 		if done {
-			return m, nil
+			return m, m.nextQueuedSubmitCmd()
 		}
 		return m, waitForStreamEvent(msg.id, msg.stream)
 
+	case queuedSubmitMsg:
+		if m.streaming || len(m.queuedInputs) == 0 {
+			return m, nil
+		}
+		value := m.queuedInputs[0]
+		m.queuedInputs = m.queuedInputs[1:]
+		if m.watchQueued && value == m.watch.Prompt {
+			m.watchQueued = false
+			m.watchRunPending = true
+			m.watch.RunStatus = "running"
+			if err := m.persistWatchSchedule(); err != nil {
+				m.sessionSaveError = err.Error()
+			}
+		}
+		m.composer.SetValue(value)
+		m.layout()
+		return m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+
+	case watchTickMsg:
+		return m.handleWatchTick(msg)
+	case watchSyncMsg:
+		cmd := m.syncWatchSchedule()
+		return m, tea.Batch(cmd, watchSyncCmd())
+
+	case tea.PasteMsg:
+		text := strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(msg.Content, "\r\n", "\n"), "\r", "\n"))
+		if text == "" {
+			return m, nil
+		}
+		lineCount := strings.Count(text, "\n") + 1
+		if lineCount >= 3 || len(text) > 200 {
+			m.pasteCounter++
+			marker := fmt.Sprintf("[Pasted ~%d lines #%d]", lineCount, m.pasteCounter)
+			m.pastedContent[marker] = text
+			beforeHeight := m.composer.Height()
+			m.composer, _ = m.composer.Update(tea.PasteMsg{Content: marker + " "})
+			m.updateSlashAutocomplete()
+			if beforeHeight != m.composer.Height() {
+				m.layout()
+			}
+			return m, nil
+		}
+
 	case tea.KeyPressMsg:
+		key := msg.String()
+		if m.browser != nil {
+			if key == "f5" || (key == "esc" && m.browser.focusFiles) {
+				m.browser = nil
+				return m, nil
+			}
+			m.browser.key(key)
+			return m, nil
+		}
+		if key == "f5" && m.pendingPermission == nil && m.review == nil && m.setup == nil && !m.terminalVisible {
+			m.browser = newFileBrowser(m.terminalCWD())
+			return m, nil
+		}
+		if m.terminalVisible && m.terminal != nil {
+			if key == "f4" || (!m.terminal.focused && key == "esc") {
+				m.terminal.terminal.Blur()
+				m.terminal.focused = false
+				m.terminalVisible = false
+				return m, nil
+			}
+			return m, m.terminal.update(msg)
+		}
+		if key == "f4" && m.setup == nil && m.review == nil && m.pendingPermission == nil {
+			if m.terminalService == nil {
+				m.terminalService = NewTerminalService(m.terminalCWD())
+			}
+			terminal, cmd, err := m.terminalService.attach(m.width, m.height)
+			if err != nil {
+				m.sessionSaveError = err.Error()
+				return m, nil
+			}
+			m.terminal = terminal
+			m.terminalVisible = true
+			resizeCmd := m.terminal.resize(m.width, m.height)
+			return m, tea.Batch(cmd, resizeCmd)
+		}
+		if m.review != nil {
+			switch key {
+			case "f3", "esc":
+				m.review = nil
+				return m, nil
+			case "ctrl+c":
+				return m, tea.Quit
+			}
+			return m, m.review.key(key)
+		}
+		if key == "f3" && m.pendingPermission == nil && m.setup == nil {
+			m.review = newReviewModel()
+			return m, m.review.refresh()
+		}
+		if m.setup != nil {
+			switch key {
+			case "esc", "f2":
+				m.setup = nil
+				return m, m.watchTimerCmd()
+			case "ctrl+c":
+				return m, tea.Quit
+			}
+			if m.setup.saved {
+				if key == "enter" {
+					m.setup = nil
+				}
+				return m, nil
+			}
+			_, cmd := m.setup.Update(msg)
+			return m, cmd
+		}
+		if key == "f2" && m.pendingPermission == nil {
+			cfg, err := rurushuconfig.Load()
+			if err != nil {
+				m.sessionSaveError = err.Error()
+				return m, nil
+			}
+			m.setup = NewSetupModel(cfg)
+			m.setup.embedded = true
+			if m.sessionStore != nil {
+				_ = m.syncWatchSchedule()
+				m.setup.EnableWatchEditor(m.watch.Active, m.watch.Interval, m.watch.Prompt, m.watch.NextRunAt, m.watch.LastRunAt, m.updateWatchFromSetup)
+				m.setup.SetWatchRunStatus(m.watch.RunStatus, m.watch.CompletedAt, m.watch.SkippedCount, m.watch.RunError)
+			}
+			m.setup.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+			return m, m.setup.Init()
+		}
 		if m.pendingPermission != nil {
 			switch msg.String() {
 			case "ctrl+c":
@@ -307,17 +565,29 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+c":
 			return m, tea.Quit
 		case "esc":
+			if m.composer.Value() != "" {
+				m.composer.Reset()
+				m.pastedContent = make(map[string]string)
+				m.updateSlashAutocomplete()
+				m.layout()
+				return m, nil
+			}
 			if m.streaming {
 				m.cancelActiveStream()
 				return m, nil
 			}
-		case "pageup":
+		case "pageup", "pgup":
+			if m.viewport.AtTop() && m.visibleHistoryLimit < len(m.messages) {
+				m.visibleHistoryLimit += 120
+				m.refreshConversation()
+				m.viewport.GotoTop()
+			}
 			m.viewport.PageUp()
 			if m.streaming {
 				m.followStream = m.viewport.AtBottom()
 			}
 			return m, nil
-		case "pagedown":
+		case "pagedown", "pgdown":
 			m.viewport.PageDown()
 			if m.streaming {
 				m.followStream = m.viewport.AtBottom()
@@ -325,15 +595,27 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "enter":
 			if m.streaming {
+				value := strings.TrimSpace(m.expandPastedContent(m.composer.Value()))
+				if value != "" {
+					m.queuedInputs = append(m.queuedInputs, value)
+					m.composer.Reset()
+					m.pastedContent = make(map[string]string)
+					m.updateSlashAutocomplete()
+					m.layout()
+				}
 				return m, nil
 			}
-			value := strings.TrimSpace(m.composer.Value())
+			value := strings.TrimSpace(m.expandPastedContent(m.composer.Value()))
 			if value == "" && len(m.pendingAttachments) == 0 {
 				return m, nil
 			}
 			m.composer.Reset()
+			m.pastedContent = make(map[string]string)
 			m.updateSlashAutocomplete()
 			if value != "" {
+				if shortcut, ok := slashFunctionKey(value); ok {
+					return m.Update(shortcut)
+				}
 				if handled, command := m.runSlashCommand(value); handled {
 					m.refreshConversation()
 					m.layout()
@@ -352,6 +634,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.thinkingVisible = false
 				m.messages = append(m.messages, Message{Role: roleAssistant})
 				m.streaming = true
+				m.progressFrame = 0
 				m.streamSeq++
 				m.activeStream = m.streamSeq
 				m.followStream = true
@@ -373,6 +656,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	beforeHeight := m.composer.Height()
 	beforeValue := m.composer.Value()
+	beforeSlashUI := strings.HasPrefix(strings.TrimSpace(beforeValue), "/")
 	var composerCmd tea.Cmd
 	m.composer, composerCmd = m.composer.Update(msg)
 	if composerCmd != nil {
@@ -385,8 +669,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if beforeHeight != m.composer.Height() {
 		m.layout()
 	} else if valueChanged {
-		m.refreshConversation()
-		m.viewport.GotoBottom()
+		// The composer is rendered independently from the transcript. Rebuilding
+		// the entire viewport for every typed character makes long sessions
+		// progressively laggy because refreshConversation walks and rejoins all
+		// messages before calling viewport.SetContent. Only slash autocomplete is
+		// transcript-backed and needs a refresh while the composer value changes.
+		afterSlashUI := strings.HasPrefix(strings.TrimSpace(m.composer.Value()), "/")
+		if beforeSlashUI || afterSlashUI {
+			m.refreshConversation()
+			m.viewport.GotoBottom()
+		}
 	}
 
 	beforeOffset := m.viewport.YOffset()
@@ -403,6 +695,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) View() tea.View {
+	if m.browser != nil {
+		return m.browser.view(m.width, m.height)
+	}
+	if m.terminalVisible && m.terminal != nil {
+		return m.terminal.view(m.width, m.height)
+	}
+	if m.review != nil {
+		return m.review.view(m.width, m.height)
+	}
+	if m.setup != nil {
+		return m.setup.View()
+	}
 	if m.width <= 0 || m.height <= 0 {
 		v := tea.NewView("starting…")
 		v.AltScreen = true
@@ -543,8 +847,14 @@ func (m *Model) refreshConversation() {
 		b.WriteString("\n")
 		b.WriteString(mutedStyle.Render("describe a change, ask a question, or start a task"))
 	} else {
-		for idx, message := range m.messages {
-			if idx > 0 {
+		start := 0
+		if m.visibleHistoryLimit > 0 && len(m.messages) > m.visibleHistoryLimit {
+			start = len(m.messages) - m.visibleHistoryLimit
+			fmt.Fprintf(&b, "  [Older messages hidden: %d · PageUp at top to load more]\n\n", start)
+		}
+		for idx := start; idx < len(m.messages); idx++ {
+			message := m.messages[idx]
+			if idx > start {
 				previous := m.messages[idx-1]
 				if message.Role == roleActivity || previous.Role == roleActivity {
 					b.WriteString("\n")
@@ -559,12 +869,18 @@ func (m *Model) refreshConversation() {
 			} else {
 				content := message.Content
 				if content == "" && m.streaming && idx == len(m.messages)-1 {
-					content = "…"
+					content = progressFrames[m.progressFrame] + " " + m.progressLabel()
+				} else {
+					content = m.renderCachedMarkdown(idx, content, max(1, inner-2))
+					if m.streaming && idx == len(m.messages)-1 {
+						content += "\n" + progressFrames[m.progressFrame] + " " + m.progressLabel()
+					}
 				}
 				b.WriteString(renderTranscript("·", content, inner, agentMarkerStyle))
 			}
 		}
 	}
+
 	if picker := m.renderSelectionPicker(inner); picker != "" {
 		if b.Len() > 0 {
 			b.WriteString("\n\n")
@@ -585,6 +901,86 @@ func (m *Model) refreshConversation() {
 	m.viewport.SetContent(b.String())
 }
 
+func (m *Model) flushTranscript() {
+	if !m.transcriptDirty {
+		return
+	}
+	follow := m.followStream
+	offset := m.viewport.YOffset()
+	m.refreshConversation()
+	m.lastTranscriptRender = time.Now()
+	m.transcriptDirty = false
+	if follow {
+		m.viewport.GotoBottom()
+	} else {
+		m.viewport.SetYOffset(min(offset, max(0, m.viewport.TotalLineCount()-m.viewport.VisibleLineCount())))
+	}
+}
+
+func (m *Model) expandPastedContent(input string) string {
+	for marker, content := range m.pastedContent {
+		input = strings.ReplaceAll(input, marker, content)
+	}
+	return input
+}
+
+func (m *Model) renderCachedMarkdown(index int, content string, width int) string {
+	if cached, ok := m.markdownCache[index]; ok && cached.source == content && cached.width == width {
+		return cached.rendered
+	}
+	rendered := renderMarkdown(content, width)
+	if m.markdownCache == nil {
+		m.markdownCache = make(map[int]markdownCacheEntry)
+	}
+	if len(m.markdownCache) >= 128 {
+		clear(m.markdownCache)
+	}
+	m.markdownCache[index] = markdownCacheEntry{source: content, width: width, rendered: rendered}
+	return rendered
+}
+
+func renderMarkdown(content string, width int) string {
+	if strings.TrimSpace(content) == "" {
+		return content
+	}
+	content = normalizeCOSLinks(content)
+	renderer, err := glamour.NewTermRenderer(glamour.WithStyles(rurushuMarkdownStyle()), glamour.WithWordWrap(width), glamour.WithTableWrap(true))
+	if err != nil {
+		return content
+	}
+	rendered, err := renderer.Render(content)
+	if err != nil {
+		return content
+	}
+	// Bubble Tea's viewport can expose OSC 8 hyperlink control sequences as
+	// stray glyphs. Glamour already renders the destination as visible text,
+	// so remove only the hyperlink controls while preserving ANSI colors.
+	return strings.TrimRight(markdownOSC8.ReplaceAllString(rendered, ""), "\n")
+}
+
+// RenderMarkdown exposes the same markdown renderer used by the single-chat
+// transcript so alternate frontends can keep formatting identical.
+func RenderMarkdown(content string, width int) string {
+	return renderMarkdown(content, width)
+}
+
+var markdownOSC8 = regexp.MustCompile(`\x1b\]8;[^\x07\x1b]*(?:\x07|\x1b\\)`)
+
+// COS may transmit ChatGPT's rich link tokens rather than Markdown links.
+// Convert only well-formed HTTP(S) tokens; leave other tokens unchanged.
+var cosLinkToken = regexp.MustCompile(`url([^]+)(https?://[^[:space:]]+)`)
+
+func normalizeCOSLinks(content string) string {
+	return cosLinkToken.ReplaceAllStringFunc(content, func(token string) string {
+		parts := cosLinkToken.FindStringSubmatch(token)
+		if len(parts) != 3 {
+			return token
+		}
+		label := strings.NewReplacer("[", "\\[", "]", "\\]").Replace(parts[1])
+		return "[" + label + "](" + parts[2] + ")"
+	})
+}
+
 func (m *Model) statusView() string {
 	width := m.frame.Status.Width
 	if width <= 0 {
@@ -598,10 +994,13 @@ func (m *Model) statusView() string {
 	if m.toolActivity != "" {
 		state = "  " + m.toolActivity
 	} else if m.streaming {
-		state = "  streaming"
+		state = "  " + progressFrames[m.progressFrame] + " " + m.progressLabel()
 	}
 	if m.runningJobs > 0 {
 		state += "  " + jobCountLabel(m.runningJobs)
+	}
+	if m.watch.Active {
+		state += "  watch " + m.watch.Interval
 	}
 	if len(m.pendingAttachments) > 0 {
 		if len(m.pendingAttachments) == 1 {
@@ -612,6 +1011,16 @@ func (m *Model) statusView() string {
 	}
 	details := truncate(model+state, max(1, width-7))
 	return statusNameStyle.Render("rurushu") + mutedStyle.Render("  "+details)
+}
+
+func (m *Model) progressLabel() string {
+	if m.thinkingVisible {
+		return "reasoning"
+	}
+	if m.streamAssistantText != "" {
+		return "responding"
+	}
+	return "waiting for response"
 }
 
 func refreshJobs(manager *jobs.Manager) tea.Cmd {
@@ -632,8 +1041,9 @@ func jobCountLabel(count int) string {
 
 func (m *Model) completionRequest() provider.CompletionRequest {
 	return provider.CompletionRequest{
-		Model:    m.modelName,
-		Messages: boundVisionHistory(m.history, maxRequestHistoryImages),
+		Model:     m.modelName,
+		Messages:  boundVisionHistory(m.history, maxRequestHistoryImages),
+		SessionID: m.sessionID,
 	}
 }
 
@@ -673,6 +1083,12 @@ func (m *Model) resolvePermission(approved bool) {
 
 func (m *Model) applyStreamEvent(event provider.StreamEvent) bool {
 	switch event.Type {
+	case provider.EventReplace:
+		m.ensureAssistantMessage()
+		m.messages[len(m.messages)-1].Content = event.Text
+		m.streamAssistantText = event.Text
+		m.thinkingVisible = false
+		m.toolActivity = ""
 	case provider.EventToken:
 		m.ensureAssistantMessage()
 		m.messages[len(m.messages)-1].Content += event.Text
@@ -728,6 +1144,7 @@ func (m *Model) applyStreamEvent(event provider.StreamEvent) bool {
 	case provider.EventDone:
 		m.commitAssistantHistory()
 		m.persistSessionWithWarning()
+		m.watchRunStatus("completed", "")
 		m.finishStream()
 		return true
 	}
@@ -796,11 +1213,19 @@ func (m *Model) finishStream() {
 	m.refreshConversation()
 }
 
+func (m *Model) nextQueuedSubmitCmd() tea.Cmd {
+	if len(m.queuedInputs) == 0 {
+		return nil
+	}
+	return func() tea.Msg { return queuedSubmitMsg{} }
+}
+
 func (m *Model) finishStreamWithError(err error) {
 	message := "request failed"
 	if err != nil {
 		message = "error: " + err.Error()
 	}
+	m.watchRunStatus("failed", message)
 	if len(m.messages) > 0 && m.messages[len(m.messages)-1].Role == roleAssistant {
 		content := strings.TrimSpace(m.messages[len(m.messages)-1].Content)
 		if content == "" {
@@ -818,6 +1243,7 @@ func (m *Model) cancelActiveStream() {
 	if !m.streaming {
 		return
 	}
+	m.watchRunStatus("interrupted", "stream cancelled")
 	if m.cancelStream != nil {
 		m.cancelStream()
 	}

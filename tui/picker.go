@@ -63,6 +63,7 @@ func (m *Model) handleSelectionPickerKey(msg tea.KeyPressMsg) (bool, tea.Cmd) {
 		return true, nil
 	case "enter":
 		item := picker.Items[picker.Index]
+		beforeSession := m.sessionID
 		m.selectionPicker = nil
 		output, err := item.Run()
 		m.composer.Focus()
@@ -77,6 +78,9 @@ func (m *Model) handleSelectionPickerKey(msg tea.KeyPressMsg) (bool, tea.Cmd) {
 		m.refreshConversation()
 		m.layout()
 		m.viewport.GotoBottom()
+		if m.sessionID != beforeSession {
+			return true, m.watchTimerCmd()
+		}
 		return true, nil
 	default:
 		return true, nil

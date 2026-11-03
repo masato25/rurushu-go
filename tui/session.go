@@ -16,6 +16,7 @@ func (m *Model) SetProjectSession(store *projectstate.Store, session projectstat
 	m.sessionSaveError = ""
 	m.restoreHistory(session.Messages)
 	m.registerSessionSlashCommands()
+	m.loadWatchSchedule()
 }
 
 func (m *Model) SessionID() string { return m.sessionID }
@@ -25,18 +26,31 @@ func (m *Model) registerSessionSlashCommands() {
 		return
 	}
 	_ = m.RegisterSlashCommand(SlashCommand{
+		Name: "reload", Usage: "/reload", Description: "build and restart Rurushu in the current session",
+		Run: func(args string) (SlashCommandResult, error) {
+			if strings.TrimSpace(args) != "" {
+				return SlashCommandResult{}, fmt.Errorf("/reload does not accept arguments")
+			}
+			if m.streaming || m.pendingPermission != nil {
+				return SlashCommandResult{}, fmt.Errorf("cannot reload while a request is active")
+			}
+			m.persistSessionWithWarning()
+			if m.sessionSaveError != "" {
+				return SlashCommandResult{}, fmt.Errorf("cannot reload: session save failed: %s", m.sessionSaveError)
+			}
+			m.reloadRequested = true
+			return SlashCommandResult{Quit: true}, nil
+		},
+	})
+	_ = m.RegisterSlashCommand(SlashCommand{
 		Name:        "sessions",
 		Usage:       "/sessions",
-		Description: "list project sessions",
+		Description: "select a project session",
 		Run: func(args string) (SlashCommandResult, error) {
 			if strings.TrimSpace(args) != "" {
 				return SlashCommandResult{}, fmt.Errorf("/sessions does not accept arguments")
 			}
-			sessions, err := m.sessionStore.ListSessions()
-			if err != nil {
-				return SlashCommandResult{}, err
-			}
-			return SlashCommandResult{Output: formatSessions(sessions, m.sessionID)}, nil
+			return m.sessionPicker()
 		},
 	})
 	_ = m.RegisterSlashCommand(SlashCommand{
@@ -46,32 +60,13 @@ func (m *Model) registerSessionSlashCommands() {
 		Run: func(args string) (SlashCommandResult, error) {
 			id := strings.TrimSpace(args)
 			if id == "" {
-				sessions, err := m.sessionStore.ListSessions()
-				if err != nil {
-					return SlashCommandResult{}, err
-				}
-				if len(sessions) == 0 {
-					return SlashCommandResult{Output: "No saved sessions."}, nil
-				}
-				items := make([]selectionPickerItem, 0, len(sessions))
-				for _, listed := range sessions {
-					sessionID := listed.ID
-					marker := " "
-					if sessionID == m.sessionID {
-						marker = "*"
-					}
-					items = append(items, selectionPickerItem{
-						Label:   fmt.Sprintf("%s %s  %d asks  %s", marker, sessionID, countUserAsks(listed.Messages), formatSessionTime(listed.UpdatedAt)),
-						Command: "/resume " + sessionID,
-						Run: func() (string, error) {
-							return m.resumeSession(sessionID)
-						},
-					})
-				}
-				return SlashCommandResult{picker: &selectionPicker{Title: "resume session", Items: items}}, nil
+				return m.sessionPicker()
 			}
 			output, err := m.resumeSession(id)
-			return SlashCommandResult{Output: output}, err
+			if err != nil {
+				return SlashCommandResult{}, err
+			}
+			return SlashCommandResult{Output: output, cmd: m.watchTimerCmd()}, nil
 		},
 	})
 	_ = m.RegisterSlashCommand(SlashCommand{
@@ -86,8 +81,11 @@ func (m *Model) registerSessionSlashCommands() {
 			if err != nil {
 				return SlashCommandResult{}, err
 			}
+			if err := m.sessionStore.HoldSession(session.ID); err != nil {
+				return SlashCommandResult{}, err
+			}
 			m.restoreSession(session)
-			return SlashCommandResult{Output: "started " + session.ID}, nil
+			return SlashCommandResult{Output: "started " + session.ID, cmd: m.watchTimerCmd()}, nil
 		},
 	})
 	_ = m.RegisterSlashCommand(SlashCommand{
@@ -95,6 +93,9 @@ func (m *Model) registerSessionSlashCommands() {
 		Usage:       "/rewind [ask-number|last]",
 		Description: "fork from an earlier ask and load it for editing",
 		Run: func(args string) (SlashCommandResult, error) {
+			if isCOSProvider(m.provider) {
+				return SlashCommandResult{}, fmt.Errorf("/rewind is not supported by the COS provider")
+			}
 			asks := userAskPositions(m.history)
 			value := strings.TrimSpace(args)
 			if value == "" {
@@ -134,6 +135,41 @@ func (m *Model) registerSessionSlashCommands() {
 	})
 }
 
+func (m *Model) sessionPicker() (SlashCommandResult, error) {
+	sessions, err := m.sessionStore.ListSessions()
+	if err != nil {
+		return SlashCommandResult{}, err
+	}
+	if len(sessions) == 0 {
+		return SlashCommandResult{Output: "No saved sessions."}, nil
+	}
+	items := make([]selectionPickerItem, 0, len(sessions))
+	for _, listed := range sessions {
+		sessionID := listed.ID
+		marker := " "
+		if sessionID == m.sessionID {
+			marker = "*"
+		}
+		items = append(items, selectionPickerItem{
+			Label:   fmt.Sprintf("%s %s  %d asks  %s", marker, sessionID, countUserAsks(listed.Messages), formatSessionTime(listed.UpdatedAt)),
+			Command: "/resume " + sessionID,
+			Run: func() (string, error) {
+				return m.resumeSession(sessionID)
+			},
+		})
+	}
+	return SlashCommandResult{picker: &selectionPicker{Title: "select session", Items: items}}, nil
+}
+
+func isCOSProvider(providerID string) bool {
+	switch strings.ToLower(strings.TrimSpace(providerID)) {
+	case "cos", "chat-on-steroids":
+		return true
+	default:
+		return false
+	}
+}
+
 func (m *Model) resumeSession(id string) (string, error) {
 	var (
 		session projectstate.Session
@@ -145,6 +181,9 @@ func (m *Model) resumeSession(id string) (string, error) {
 		session, err = m.sessionStore.ActivateSession(id)
 	}
 	if err != nil {
+		return "", err
+	}
+	if err := m.sessionStore.HoldSession(session.ID); err != nil {
 		return "", err
 	}
 	if id == "last" {
@@ -161,6 +200,7 @@ func (m *Model) restoreSession(session projectstate.Session) {
 	m.sessionSaveError = ""
 	m.pendingAttachments = nil
 	m.restoreHistory(session.Messages)
+	m.loadWatchSchedule()
 	m.composer.Reset()
 	m.updateSlashAutocomplete()
 	m.refreshConversation()
@@ -170,6 +210,7 @@ func (m *Model) restoreSession(session projectstate.Session) {
 }
 
 func (m *Model) restoreHistory(history []provider.Message) {
+	m.markdownCache = nil
 	m.history = cloneProviderMessages(history)
 	m.messages = transcriptFromHistory(m.history)
 	m.streamAssistantText = ""
@@ -247,6 +288,9 @@ func (m *Model) rewindAsk(askNumber int, asks []int) (string, error) {
 	if m.sessionStore != nil && parent != "" {
 		fork, err := m.sessionStore.ForkSession(parent, askNumber, m.modelName, m.provider, prefix)
 		if err != nil {
+			return "", err
+		}
+		if err := m.sessionStore.HoldSession(fork.ID); err != nil {
 			return "", err
 		}
 		m.sessionID = fork.ID

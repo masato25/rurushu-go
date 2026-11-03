@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/masato25/rurushu-go/projectstate"
 	"github.com/masato25/rurushu-go/provider"
 )
@@ -39,7 +40,7 @@ func TestProjectSessionRestoreRebuildsExactHistoryAndToolTranscript(t *testing.T
 		t.Fatalf("history mismatch\n got=%#v\nwant=%#v", m.history, history)
 	}
 	m.refreshConversation()
-	view := m.viewport.View()
+	view := ansi.Strip(m.viewport.View())
 	for _, want := range []string{"inspect", "README.md", "path is required", "I could not read it."} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("restored transcript missing %q:\n%s", want, view)
@@ -50,6 +51,65 @@ func TestProjectSessionRestoreRebuildsExactHistoryAndToolTranscript(t *testing.T
 	}
 	if strings.Contains(view, "do not render this") {
 		t.Fatalf("reasoning leaked into restored transcript: %q", view)
+	}
+}
+
+// Drive the same Enter/slash command path as the interactive TUI while using
+// an isolated store. Assert persistent state, not terminal escape sequences.
+func TestSessionCommandsOwnershipAndReloadE2E(t *testing.T) {
+	store, err := projectstate.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.StartSession("test", "cos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.HoldSession(first.ID); err != nil {
+		t.Fatal(err)
+	}
+	defer store.ReleaseSession()
+	m := NewWithStreamer("test", "cos", &fakeStreamer{})
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.SetProjectSession(store, first)
+	other, err := projectstate.Open(store.ProjectRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := other.HoldSession(first.ID); err == nil {
+		t.Fatal("second client acquired active session")
+	}
+	if cmd := submitSlashTest(t, m, "/new"); cmd != nil {
+		t.Fatal("/new spawned asynchronous command")
+	}
+	second := m.SessionID()
+	if second == first.ID {
+		t.Fatal("/new did not switch session")
+	}
+	if err := other.HoldSession(first.ID); err != nil {
+		t.Fatalf("old lease not released: %v", err)
+	}
+	if err := other.HoldSession(second); err == nil {
+		t.Fatal("new session is not owned")
+	}
+	other.ReleaseSession()
+	if cmd := submitSlashTest(t, m, "/resume "+first.ID); cmd != nil {
+		t.Fatal("/resume spawned asynchronous command")
+	}
+	if m.SessionID() != first.ID {
+		t.Fatalf("resumed %s", m.SessionID())
+	}
+	if err := other.HoldSession(second); err != nil {
+		t.Fatalf("second lease not released: %v", err)
+	}
+	other.ReleaseSession()
+	_ = submitSlashTest(t, m, "/reload")
+	if !m.ReloadRequested() || m.SessionID() != first.ID {
+		t.Fatal("reload did not preserve current session")
+	}
+	loaded, err := store.LoadSession(first.ID)
+	if err != nil || loaded.ID != first.ID {
+		t.Fatalf("session unavailable after reload request: %v", err)
 	}
 }
 
@@ -172,6 +232,31 @@ func TestSessionSlashCommandsAppearInHelp(t *testing.T) {
 	}
 }
 
+func TestRewindRejectsCOSProvider(t *testing.T) {
+	store, err := projectstate.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := store.StartSession("chatgpt-web", "cos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := New("chatgpt-web", "cos")
+	m.SetProjectSession(store, session)
+	m.history = []provider.Message{{Role: provider.RoleUser, Content: "first ask"}}
+	originalID := m.sessionID
+
+	if cmd := submitSlashTest(t, m, "/rewind 1"); cmd != nil {
+		t.Fatal("/rewind unexpectedly started async work")
+	}
+	if m.sessionID != originalID || len(m.history) != 1 {
+		t.Fatalf("COS /rewind mutated session: id=%q history=%#v", m.sessionID, m.history)
+	}
+	if len(m.messages) == 0 || !strings.Contains(m.messages[len(m.messages)-1].Content, "not supported by the COS provider") {
+		t.Fatalf("COS /rewind did not report unsupported operation: %#v", m.messages)
+	}
+}
+
 func TestResumePickerSupportsArrowSelectionAndEnter(t *testing.T) {
 	store, err := projectstate.Open(t.TempDir())
 	if err != nil {
@@ -224,6 +309,58 @@ func TestResumePickerSupportsArrowSelectionAndEnter(t *testing.T) {
 	}
 	if len(m.messages) < 2 || m.messages[len(m.messages)-2].Content != "/resume "+first.ID {
 		t.Fatalf("selected resume action missing from transcript: %#v", m.messages)
+	}
+}
+
+func TestSessionsPickerSupportsArrowSelectionAndEnter(t *testing.T) {
+	store, err := projectstate.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.StartSession("test-model", "openai-compatible")
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstHistory := []provider.Message{
+		{Role: provider.RoleUser, Content: "first session ask"},
+		{Role: provider.RoleAssistant, Content: "first session answer"},
+	}
+	first, err = store.SaveSession(first.ID, "test-model", "openai-compatible", firstHistory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.StartSession("test-model", "openai-compatible")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondHistory := []provider.Message{
+		{Role: provider.RoleUser, Content: "second session ask"},
+		{Role: provider.RoleAssistant, Content: "second session answer"},
+	}
+	second, err = store.SaveSession(second.ID, "test-model", "openai-compatible", secondHistory)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m := New("test-model", "openai-compatible")
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 28})
+	m.SetProjectSession(store, second)
+	if cmd := submitSlashTest(t, m, "/sessions"); cmd != nil {
+		t.Fatal("/sessions picker unexpectedly returned async command")
+	}
+	if m.selectionPicker == nil || len(m.selectionPicker.Items) != 2 {
+		t.Fatalf("sessions picker=%#v", m.selectionPicker)
+	}
+	if !strings.Contains(m.selectionPicker.Items[0].Label, second.ID) {
+		t.Fatalf("newest/current session was not first: %#v", m.selectionPicker.Items)
+	}
+	m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+	m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	if m.selectionPicker != nil {
+		t.Fatal("sessions picker stayed open after Enter")
+	}
+	if m.SessionID() != first.ID || !reflect.DeepEqual(m.history, firstHistory) {
+		t.Fatalf("selected session not restored: id=%q history=%#v", m.SessionID(), m.history)
 	}
 }
 

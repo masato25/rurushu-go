@@ -18,6 +18,7 @@ func TestSaveAndLoad(t *testing.T) {
 		MaxSteps:         12,
 		MaxContextTokens: 32000,
 		CompactAt:        75,
+		AutoApprove:      true,
 	}
 	path, err := Save(want)
 	if err != nil {
@@ -50,5 +51,38 @@ func TestLoadMissingUsesDefaults(t *testing.T) {
 	}
 	if got.BaseURL == "" || got.SystemPrompt == "" || got.MaxSteps <= 0 {
 		t.Fatalf("defaults not applied: %#v", got)
+	}
+	if got.AutoApprove {
+		t.Fatal("auto approve must be disabled by default")
+	}
+}
+
+func TestLoadForDirOverlaysProjectRoleDefaults(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", root)
+	_, err := Save(Config{
+		Single: RoleConfig{Provider: "cos", Model: "chatgpt-web"},
+		Duel: DuelConfig{
+			Left:      RoleConfig{Provider: "cos", Model: "chatgpt-web"},
+			Right:     RoleConfig{Provider: "ollama", Model: "global-right"},
+			OllamaURL: "http://global:11434",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	project := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(project, ".rurushu"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, ".rurushu", "config.json"), []byte(`{"duel":{"right":{"model":"project-right"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadForDir(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Single.Provider != "cos" || got.Duel.Right.Provider != "ollama" || got.Duel.Right.Model != "project-right" || got.Duel.OllamaURL != "http://global:11434" {
+		t.Fatalf("merged config=%#v", got)
 	}
 }

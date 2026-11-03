@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -12,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	rurushuconfig "github.com/masato25/rurushu-go/config"
 	"github.com/masato25/rurushu-go/harness"
@@ -137,12 +140,16 @@ func decodeHeadlessRequest(in io.Reader) (headlessRequest, error) {
 }
 
 func executeHeadless(ctx context.Context, req headlessRequest) (headlessResponse, error) {
+	executionID := strings.TrimSpace(req.ExecutionID)
+	if executionID == "" {
+		executionID = newHeadlessExecutionID()
+	}
 	fail := func(err error) (headlessResponse, error) {
 		resp := headlessFailure(err)
 		if req.Version >= headlessMinimumProtocolVersion && req.Version <= headlessProtocolVersion {
 			resp.Version = req.Version
 		}
-		resp.ExecutionID = req.ExecutionID
+		resp.ExecutionID = executionID
 		return resp, err
 	}
 	failInvalid := func(err error) (headlessResponse, error) {
@@ -150,7 +157,7 @@ func executeHeadless(ctx context.Context, req headlessRequest) (headlessResponse
 		if req.Version >= headlessMinimumProtocolVersion && req.Version <= headlessProtocolVersion {
 			resp.Version = req.Version
 		}
-		resp.ExecutionID = req.ExecutionID
+		resp.ExecutionID = executionID
 		resp.ErrorCode = "invalid_request"
 		resp.RetryAfter = 0
 		return resp, err
@@ -185,7 +192,11 @@ func executeHeadless(ctx context.Context, req headlessRequest) (headlessResponse
 		return failInvalid(fmt.Errorf("cwd %q: %w", cwd, err))
 	}
 
+	providerName := strings.ToLower(firstNonEmpty(os.Getenv("RURUSHU_PROVIDER"), "openai-compatible"))
 	model := firstNonEmpty(req.Model, os.Getenv("RURUSHU_MODEL"), os.Getenv("OPENAI_MODEL"), saved.Model)
+	if model == "" && (providerName == "cos" || providerName == "chat-on-steroids") {
+		model = "chatgpt-web"
+	}
 	if model == "" {
 		return failInvalid(fmt.Errorf("model is required"))
 	}
@@ -264,7 +275,18 @@ func executeHeadless(ctx context.Context, req headlessRequest) (headlessResponse
 		perm = permission.AllowAll{}
 	}
 
-	prov := provider.NewOpenAICompatibleProvider(baseURL, apiKey)
+	var prov provider.Provider
+	switch providerName {
+	case "openai-compatible", "openai":
+		prov = provider.NewOpenAICompatibleProvider(baseURL, apiKey)
+	case "cos", "chat-on-steroids":
+		prov = provider.NewCOSProvider(cwd)
+		if model == "" {
+			model = "chatgpt-web"
+		}
+	default:
+		return failInvalid(fmt.Errorf("unsupported provider %q", os.Getenv("RURUSHU_PROVIDER")))
+	}
 	client, err := harness.New(prov, harness.Config{
 		CWD:                cwd,
 		SystemPrompt:       systemPrompt,
@@ -279,15 +301,16 @@ func executeHeadless(ctx context.Context, req headlessRequest) (headlessResponse
 		return fail(err)
 	}
 	result, err := client.Run(ctx, provider.CompletionRequest{
-		Model:    model,
-		Messages: []provider.Message{{Role: provider.RoleUser, Content: strings.TrimSpace(req.Task)}},
+		Model:     model,
+		Messages:  []provider.Message{{Role: provider.RoleUser, Content: strings.TrimSpace(req.Task)}},
+		SessionID: executionID,
 	})
 	if err != nil {
 		return fail(err)
 	}
 	return headlessResponse{
 		Version:     req.Version,
-		ExecutionID: req.ExecutionID,
+		ExecutionID: executionID,
 		Status:      "completed",
 		Text:        result.Text,
 		Reasoning:   result.Reasoning,
@@ -296,6 +319,14 @@ func executeHeadless(ctx context.Context, req headlessRequest) (headlessResponse
 		},
 		ToolCalls: result.ToolCalls, Compactions: result.Compactions,
 	}, nil
+}
+
+func newHeadlessExecutionID() string {
+	var data [16]byte
+	if _, err := rand.Read(data[:]); err == nil {
+		return "headless-" + hex.EncodeToString(data[:])
+	}
+	return "headless-" + fmt.Sprint(time.Now().UnixNano())
 }
 
 func headlessFailure(err error) headlessResponse {

@@ -41,17 +41,22 @@ type TokenUsage struct {
 }
 
 type CompletionRequest struct {
-	Model       string           `json:"model"`
-	Messages    []Message        `json:"messages"`
-	Tools       []map[string]any `json:"tools,omitempty"`
-	Temperature *float64         `json:"temperature,omitempty"`
-	MaxTokens   *int             `json:"max_tokens,omitempty"`
+	Model           string           `json:"model"`
+	Messages        []Message        `json:"messages"`
+	Tools           []map[string]any `json:"tools,omitempty"`
+	Temperature     *float64         `json:"temperature,omitempty"`
+	MaxTokens       *int             `json:"max_tokens,omitempty"`
+	ReasoningEffort string           `json:"reasoning_effort,omitempty"`
+	// SessionID identifies the local Rurushu session to providers that maintain
+	// their own durable conversation, such as Chat On Steroids.
+	SessionID string `json:"-"`
 }
 
 type EventType string
 
 const (
 	EventToken          EventType = "token"
+	EventReplace        EventType = "replace"
 	EventReasoning      EventType = "reasoning"
 	EventToolCall       EventType = "tool_call"
 	EventToolStart      EventType = "tool_start"

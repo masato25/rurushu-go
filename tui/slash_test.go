@@ -50,10 +50,23 @@ func TestDefaultSlashHelpIsLocal(t *testing.T) {
 		t.Fatalf("messages=%d, want 2", len(m.messages))
 	}
 	output := m.messages[1].Content
-	for _, want := range []string{"/clear", "/exit", "/help", "Autocomplete:", "//text"} {
+	for _, want := range []string{"/clear", "/duel", "/exit", "/help", "Autocomplete:", "//text"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("help output missing %q: %q", want, output)
 		}
+	}
+}
+
+func TestDuelSlashRequestsModeSwitch(t *testing.T) {
+	m := New("test-model", "test-provider")
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	cmd := submitSlashTest(t, m, "/duel")
+	if cmd == nil {
+		t.Fatal("/duel did not quit the single TUI")
+	}
+	if got := m.ModeSwitchRequested(); got != "duel" {
+		t.Fatalf("mode switch=%q", got)
 	}
 }
 
@@ -130,6 +143,23 @@ func TestClearSlashCommandResetsTranscriptAndHistory(t *testing.T) {
 	}
 	if len(m.messages) != 0 || len(m.history) != 0 {
 		t.Fatalf("/clear did not reset session: messages=%#v history=%#v", m.messages, m.history)
+	}
+}
+
+func TestClearSlashCommandRejectsCOSProvider(t *testing.T) {
+	m := New("chatgpt-web", "cos")
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.messages = append(m.messages, Message{Role: roleUser, Content: "old"})
+	m.history = append(m.history, provider.Message{Role: provider.RoleUser, Content: "old"})
+
+	if cmd := submitSlashTest(t, m, "/clear"); cmd != nil {
+		t.Fatal("/clear unexpectedly started async work")
+	}
+	if len(m.history) != 1 {
+		t.Fatalf("COS /clear mutated history: %#v", m.history)
+	}
+	if len(m.messages) < 2 || !strings.Contains(m.messages[len(m.messages)-1].Content, "not supported by the COS provider") {
+		t.Fatalf("COS /clear did not report unsupported operation: %#v", m.messages)
 	}
 }
 
@@ -271,6 +301,36 @@ func TestDoubleSlashDoesNotAutocomplete(t *testing.T) {
 	m.updateSlashAutocomplete()
 	if len(m.slashMatches) != 0 {
 		t.Fatalf("double slash unexpectedly autocompleted: %#v", m.slashMatches)
+	}
+}
+
+func TestFunctionKeySlashCommandsAreRegistered(t *testing.T) {
+	m := New("test-model", "test-provider")
+	for _, name := range []string{"f2", "f3", "f4", "f5"} {
+		if _, ok := m.slashCommands[name]; !ok {
+			t.Fatalf("/%s was not registered", name)
+		}
+	}
+}
+
+func TestSlashFunctionKeyParsing(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"/f2", "f2"},
+		{"/F3", "f3"},
+		{" /f4 ", "f4"},
+		{"/f5", "f5"},
+	}
+	for _, tt := range tests {
+		msg, ok := slashFunctionKey(tt.input)
+		if !ok || msg.String() != tt.want {
+			t.Fatalf("slashFunctionKey(%q)=(%q,%v), want (%q,true)", tt.input, msg.String(), ok, tt.want)
+		}
+	}
+	if _, ok := slashFunctionKey("/f2 extra"); ok {
+		t.Fatal("function-key slash command should reject arguments")
 	}
 }
 

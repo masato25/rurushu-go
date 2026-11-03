@@ -3,14 +3,52 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
+	rurushuconfig "github.com/masato25/rurushu-go/config"
 	"github.com/masato25/rurushu-go/permission"
 	"github.com/masato25/rurushu-go/provider"
 )
+
+func TestF2SetupFromChatAndReturnWithoutQuitting(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	cfg := rurushuconfig.Defaults()
+	cfg.Model = "original-model"
+	if _, err := rurushuconfig.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	m := NewWithStreamer("original-model", "cos", &fakeStreamer{})
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 35})
+	m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyF2}))
+	if m.setup == nil || !strings.Contains(ansi.Strip(m.View().Content), "rurushu setup") {
+		t.Fatal("F2 did not open setup")
+	}
+	m.setup.inputs[setupModel].SetValue("updated-model")
+	m.setup.focus = setupFieldCount - 1
+	m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	if !m.setup.saved {
+		t.Fatal("setup was not saved")
+	}
+	loaded, err := rurushuconfig.Load()
+	if err != nil || loaded.Model != "updated-model" {
+		t.Fatalf("saved model: %+v %v", loaded, err)
+	}
+	m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	if m.setup != nil {
+		t.Fatal("Enter after save did not return to chat")
+	}
+	m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyF2}))
+	m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
+	if m.setup != nil {
+		t.Fatal("Esc did not dismiss setup")
+	}
+}
 
 type fakeStreamer struct {
 	events []provider.StreamEvent
@@ -100,6 +138,42 @@ func TestPlainEnterSubmitsAndShiftEnterDoesNot(t *testing.T) {
 	}
 }
 
+func TestLargePasteIsCollapsedInComposerButSubmittedInFull(t *testing.T) {
+	streamer := newControlledStreamer()
+	m := NewWithStreamer("gpt-test", "openai-compatible", streamer)
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	pasted := strings.Repeat("0123456789", 2500)
+	m.Update(tea.PasteMsg{Content: pasted})
+	if got := m.composer.Value(); !strings.Contains(got, "[Pasted ~1 lines #1]") {
+		t.Fatalf("large paste was not collapsed: %q", got)
+	}
+	if len(m.composer.Value()) >= len(pasted) {
+		t.Fatal("large paste was inserted directly into composer")
+	}
+
+	_, start := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	if start == nil || !m.streaming {
+		t.Fatal("large paste did not submit")
+	}
+	if len(m.history) != 1 || m.history[0].Content != pasted {
+		t.Fatalf("submitted paste length=%d want=%d", len(m.history[0].Content), len(pasted))
+	}
+}
+
+func TestMultilinePasteUsesCollapsedMarker(t *testing.T) {
+	m := New("test-model", "openai-compatible")
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	pasted := "alpha\nbeta\ngamma"
+	m.Update(tea.PasteMsg{Content: pasted})
+	if got := m.composer.Value(); !strings.Contains(got, "[Pasted ~3 lines #1]") {
+		t.Fatalf("multiline paste was not collapsed: %q", got)
+	}
+	if got := m.expandPastedContent(m.composer.Value()); !strings.Contains(got, pasted) {
+		t.Fatalf("paste did not expand back to original content: %q", got)
+	}
+}
+
 func TestComposerDynamicHeightIsBounded(t *testing.T) {
 	m := New("test-model", "openai-compatible")
 	m.Update(tea.WindowSizeMsg{Width: 36, Height: 20})
@@ -141,6 +215,137 @@ func TestWorkbenchIsLeftAnchoredAndHasNoLegacyChrome(t *testing.T) {
 	}
 	if !strings.Contains(view, "rurushu") || !strings.Contains(view, "workspace ready") || !strings.Contains(view, "❯") {
 		t.Fatalf("workbench shell missing expected elements:\n%s", view)
+	}
+}
+
+func TestProgressSpinnerReflectsStreamPhase(t *testing.T) {
+	m := NewWithStreamer("test", "test", nil)
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.streaming = true
+	m.messages = []Message{{Role: roleAssistant}}
+	m.refreshConversation()
+	if got := m.progressLabel(); got != "waiting for response" {
+		t.Fatalf("initial progress = %q", got)
+	}
+	before := m.progressFrame
+	m.Update(progressTickMsg{})
+	if m.progressFrame == before {
+		t.Fatal("spinner did not advance")
+	}
+	m.applyStreamEvent(provider.StreamEvent{Type: provider.EventReasoning, ReasoningText: "internal"})
+	if got := m.progressLabel(); got != "reasoning" {
+		t.Fatalf("reasoning progress = %q", got)
+	}
+	m.applyStreamEvent(provider.StreamEvent{Type: provider.EventToken, Text: "answer"})
+	if got := m.progressLabel(); got != "responding" {
+		t.Fatalf("response progress = %q", got)
+	}
+	m.finishStream()
+	before = m.progressFrame
+	m.Update(progressTickMsg{})
+	if m.progressFrame != before || m.streaming {
+		t.Fatal("spinner advanced after stream finished")
+	}
+}
+
+func TestProgressTickDoesNotRebuildLongTranscript(t *testing.T) {
+	m := NewWithStreamer("test", "test", nil)
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.streaming = true
+	m.messages = []Message{{Role: roleAssistant, Content: "original transcript"}}
+	m.refreshConversation()
+	before := m.viewport.View()
+	// Changing the source without refreshing lets us detect an accidental
+	// full transcript rebuild from an animation-only event.
+	m.messages[0].Content = "modified transcript"
+	m.Update(progressTickMsg{})
+	if got := m.viewport.View(); got != before {
+		t.Fatal("spinner tick rebuilt transcript rather than updating status only")
+	}
+	if !strings.Contains(m.statusView(), progressFrames[m.progressFrame]) {
+		t.Fatal("spinner was not updated in the status line")
+	}
+}
+
+func TestMarkdownRenderAndActiveResponseProgress(t *testing.T) {
+	m := NewWithStreamer("test", "test", nil)
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m.streaming = true
+	m.messages = []Message{{Role: roleAssistant, Content: "# Heading\n**bold** and `code`\n- item"}}
+	m.streamAssistantText = "# Heading"
+	m.refreshConversation()
+	view := m.viewport.View()
+	for _, raw := range []string{"Heading", "bold", "code", "item", "responding"} {
+		if !strings.Contains(view, raw) {
+			t.Fatalf("missing %q in rendered response: %q", raw, view)
+		}
+	}
+	if strings.Contains(view, "**bold**") || strings.Contains(view, "# Heading") {
+		t.Fatalf("unrendered markdown: %q", view)
+	}
+	before := m.progressFrame
+	m.Update(progressTickMsg{})
+	if before == m.progressFrame {
+		t.Fatal("response progress spinner stopped during active output")
+	}
+}
+
+func TestGlamourMarkdownStructures(t *testing.T) {
+	source := "# Heading\n\n*italic* ~~removed~~\n\n- parent\n  - child\n\n```go\nfunc main() {\n    println(\"hello\")\n}\n```\n\n| Key | Value |\n| --- | --- |\n| A | B |\n\n> quoted\n\n[Go](https://go.dev)"
+	got := ansi.Strip(renderMarkdown(source, 78))
+	for _, want := range []string{"Heading", "italic", "removed", "parent", "child", "func main()", `println("hello")`, "Key", "Value", "quoted", "Go"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("Markdown output missing %q: %q", want, got)
+		}
+	}
+	for _, raw := range []string{"```go", "~~removed~~", "| --- | --- |"} {
+		if strings.Contains(got, raw) {
+			t.Fatalf("Markdown syntax leaked %q: %q", raw, got)
+		}
+	}
+}
+
+func TestMarkdownLinksDoNotLeakOSC8Controls(t *testing.T) {
+	got := renderMarkdown("- [Go Documentation](https://go.dev/doc/)\n- [Glamour](https://github.com/charmbracelet/glamour)", 80)
+	for _, want := range []string{"Go Documentation", "https://go.dev/doc/", "Glamour"} {
+		if !strings.Contains(ansi.Strip(got), want) {
+			t.Fatalf("missing link content %q: %q", want, got)
+		}
+	}
+	if strings.Contains(got, "\x1b]8;") || strings.Contains(got, "]8;;") {
+		t.Fatalf("OSC 8 hyperlink controls leaked: %q", got)
+	}
+	if !strings.Contains(got, "\x1b[") {
+		t.Fatalf("styling was stripped along with hyperlinks: %q", got)
+	}
+}
+
+func TestCOSRichLinkTokensRenderAsReadableLinks(t *testing.T) {
+	source := "• urlGo Documentationhttps://go.dev/doc/\n• urlBubble Teahttps://github.com/charmbracelet/bubbletea"
+	got := ansi.Strip(renderMarkdown(source, 85))
+	for _, want := range []string{"Go Documentation", "https://go.dev/doc/", "Bubble Tea", "https://github.com/charmbracelet/bubbletea"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q: %q", want, got)
+		}
+	}
+	if strings.Contains(got, "url") || strings.Contains(got, "") || strings.Contains(got, "") {
+		t.Fatalf("raw rich-link token leaked: %q", got)
+	}
+}
+
+func TestCOSSnapshotCorrectionReplacesDisplayedAndSavedText(t *testing.T) {
+	m := NewWithStreamer("test", "cos", nil)
+	m.streaming = true
+	m.messages = []Message{{Role: roleAssistant}}
+	m.applyStreamEvent(provider.StreamEvent{Type: provider.EventReplace, Text: "incomplete code ```go"})
+	m.applyStreamEvent(provider.StreamEvent{Type: provider.EventReplace, Text: "complete code\n\n```go\nfunc main() {}\n```"})
+	want := "complete code\n\n```go\nfunc main() {}\n```"
+	if len(m.messages) != 1 || m.messages[0].Content != want {
+		t.Fatalf("display retained stale snapshot: %#v", m.messages)
+	}
+	m.commitAssistantHistory()
+	if len(m.history) != 1 || m.history[0].Content != want {
+		t.Fatalf("history retained stale snapshot: %#v", m.history)
 	}
 }
 
@@ -368,7 +573,7 @@ func TestInlinePermissionApproveAndDeny(t *testing.T) {
 	}
 }
 
-func TestStreamingRejectsSecondSubmit(t *testing.T) {
+func TestStreamingQueuesSecondSubmit(t *testing.T) {
 	streamer := newControlledStreamer()
 	m := NewWithStreamer("gpt-test", "openai-compatible", streamer)
 	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -386,10 +591,67 @@ func TestStreamingRejectsSecondSubmit(t *testing.T) {
 	m.composer.SetValue("second")
 	m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
 	if len(m.messages) != 2 {
-		t.Fatalf("second submit changed transcript while streaming: %#v", m.messages)
+		t.Fatalf("queued submit changed transcript while streaming: %#v", m.messages)
 	}
-	if m.composer.Value() != "second" {
-		t.Fatalf("second draft was modified while submit was blocked: %q", m.composer.Value())
+	if m.composer.Value() != "" {
+		t.Fatalf("queued draft was not cleared from composer: %q", m.composer.Value())
+	}
+	if len(m.queuedInputs) != 1 || m.queuedInputs[0] != "second" {
+		t.Fatalf("queued inputs=%#v", m.queuedInputs)
+	}
+}
+
+func TestQueuedSubmitStartsAfterCurrentStreamFinishes(t *testing.T) {
+	streamer := &sequenceStreamer{scripts: [][]provider.StreamEvent{
+		{{Type: provider.EventToken, Text: "first answer"}, {Type: provider.EventDone}},
+		{{Type: provider.EventToken, Text: "second answer"}, {Type: provider.EventDone}},
+	}}
+	m := NewWithStreamer("gpt-test", "openai-compatible", streamer)
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.composer.SetValue("first")
+	_, start := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	_, wait := m.Update(start())
+
+	m.composer.SetValue("second")
+	m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+
+	_, wait = m.Update(wait())
+	_, queued := m.Update(wait())
+	if queued == nil {
+		t.Fatal("stream completion did not schedule queued input")
+	}
+	_, secondStart := m.Update(queued())
+	if secondStart == nil || !m.streaming {
+		t.Fatal("queued input did not start next stream")
+	}
+	if len(streamer.reqs) != 1 {
+		t.Fatalf("second request started too early: %d", len(streamer.reqs))
+	}
+	m.Update(secondStart())
+	if len(streamer.reqs) != 2 {
+		t.Fatalf("queued request count=%d want=2", len(streamer.reqs))
+	}
+	last := streamer.reqs[1].Messages[len(streamer.reqs[1].Messages)-1].Content
+	if last != "second" {
+		t.Fatalf("queued request content=%q", last)
+	}
+}
+
+func TestEscClearsComposerWithoutCancellingStream(t *testing.T) {
+	streamer := newControlledStreamer()
+	m := NewWithStreamer("gpt-test", "openai-compatible", streamer)
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.composer.SetValue("first")
+	_, start := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	m.Update(start())
+
+	m.composer.SetValue("draft to clear")
+	m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
+	if m.composer.Value() != "" {
+		t.Fatalf("Esc did not clear draft: %q", m.composer.Value())
+	}
+	if !m.streaming {
+		t.Fatal("Esc with a draft should clear input without cancelling active stream")
 	}
 }
 
@@ -527,5 +789,54 @@ func TestSequentialResizesPreserveExactTerminalGeometry(t *testing.T) {
 				t.Fatalf("resize %dx%d cursor escaped window: x=%d y=%d", size.Width, size.Height, view.Cursor.X, view.Cursor.Y)
 			}
 		}
+	}
+}
+
+func TestTranscriptWindowRetainsHistoryAndExpands(t *testing.T) {
+	m := New("test", "cos")
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	for i := 0; i < 250; i++ {
+		m.messages = append(m.messages, Message{Role: roleUser, Content: fmt.Sprintf("entry-%03d", i)})
+	}
+	m.refreshConversation()
+	got := ansi.Strip(m.viewport.View())
+	if !strings.Contains(got, "Older messages hidden: 130") {
+		t.Fatalf("window marker missing: %q", got)
+	}
+	m.viewport.GotoTop()
+	m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyPgUp}))
+	if m.visibleHistoryLimit != 240 || len(m.messages) != 250 {
+		t.Fatalf("pagination mutated history: limit=%d len=%d", m.visibleHistoryLimit, len(m.messages))
+	}
+}
+
+func TestStreamRenderThrottleAndCacheLimit(t *testing.T) {
+	m := New("test", "cos")
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.streaming = true
+	m.activeStream = 9
+	m.messages = []Message{{Role: roleAssistant, Content: "initial"}}
+	m.refreshConversation()
+	m.lastTranscriptRender = time.Now()
+	m.Update(streamEventMsg{id: 9, ok: true, event: provider.StreamEvent{Type: provider.EventToken, Text: " later"}})
+	if !m.transcriptDirty {
+		t.Fatal("token should be buffered for rendering")
+	}
+	if strings.Contains(ansi.Strip(m.viewport.View()), "later") {
+		t.Fatal("token rendered before throttle deadline")
+	}
+	m.Update(progressTickMsg{})
+	if m.transcriptDirty || !strings.Contains(ansi.Strip(m.viewport.View()), "later") {
+		t.Fatal("buffered token not flushed")
+	}
+	for i := 0; i < 300; i++ {
+		m.renderCachedMarkdown(i, "hello", 40)
+	}
+	if len(m.markdownCache) > 128 {
+		t.Fatalf("cache unbounded: %d", len(m.markdownCache))
+	}
+	m.restoreHistory(nil)
+	if len(m.markdownCache) != 0 {
+		t.Fatal("cache survived session history restore")
 	}
 }

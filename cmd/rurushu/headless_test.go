@@ -3,6 +3,9 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +16,53 @@ import (
 	"github.com/masato25/rurushu-go/provider"
 	"github.com/masato25/rurushu-go/tool"
 )
+
+func TestExecuteHeadlessReturnsGeneratedExecutionID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/completions" {
+			t.Fatalf("path=%q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("RURUSHU_PROVIDER", "openai-compatible")
+	t.Setenv("RURUSHU_BASE_URL", server.URL)
+	t.Setenv("RURUSHU_API_KEY", "")
+	t.Setenv("RURUSHU_MODEL", "test-model")
+	t.Setenv("OPENAI_MODEL", "")
+
+	resp, err := executeHeadless(context.Background(), headlessRequest{
+		Version:     headlessProtocolVersion,
+		Task:        "test",
+		CWD:         t.TempDir(),
+		ToolProfile: "none",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.ExecutionID == "" || !strings.HasPrefix(resp.ExecutionID, "headless-") {
+		t.Fatalf("generated execution_id=%q", resp.ExecutionID)
+	}
+	if resp.Text != "ok" {
+		t.Fatalf("text=%q", resp.Text)
+	}
+}
+
+func TestExecuteHeadlessReturnsGeneratedExecutionIDOnValidationError(t *testing.T) {
+	resp, err := executeHeadless(context.Background(), headlessRequest{
+		Version: headlessProtocolVersion,
+		Task:    "",
+	})
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	if !strings.HasPrefix(resp.ExecutionID, "headless-") {
+		t.Fatalf("generated execution_id=%q", resp.ExecutionID)
+	}
+}
 
 func TestExecuteHeadlessRejectsUnsupportedVersion(t *testing.T) {
 	resp, err := executeHeadless(context.Background(), headlessRequest{Version: 3, Task: "test"})

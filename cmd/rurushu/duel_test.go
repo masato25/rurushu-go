@@ -1,0 +1,691 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+	"time"
+
+	rurushuconfig "github.com/masato25/rurushu-go/config"
+	"github.com/masato25/rurushu-go/duel"
+	"github.com/masato25/rurushu-go/projectstate"
+)
+
+func TestResolveDuelStateRejectsMissingGoal(t *testing.T) {
+	store, err := projectstate.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = resolveDuelState(store, filepath.Join(store.Dir, "duel-state.json"), "", false, false)
+	if err == nil {
+		t.Fatal("missing goal accepted by state creator")
+	}
+}
+
+func TestDuelHelpExplainsRecurringLifecycle(t *testing.T) {
+	oldStderr := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = w
+	t.Cleanup(func() { os.Stderr = oldStderr })
+
+	if err := runDuel([]string{"--help"}); err != nil {
+		t.Fatalf("help failed: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if _, err := buf.ReadFrom(r); err != nil {
+		t.Fatal(err)
+	}
+	got := buf.String()
+	for _, want := range []string{
+		"Recurring duel:",
+		"--run-for is the total lifetime",
+		"LEFT is the primary worker and runs first",
+		"at most 100 characters",
+		"different providers and models",
+		"DONE:",
+		"-left-provider",
+		"-right-model",
+		"rurushu duel --new",
+		"rurushu duel --resume",
+		"rurushu duel --continue",
+		"never shorten",
+		"not a daemon or system service",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("help missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestDuelContinueRequiresState(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	if err := runDuel([]string{"--cwd", t.TempDir(), "--continue"}); err == nil {
+		t.Fatal("missing state accepted by --continue")
+	}
+}
+
+func TestDuelUsesConfiguredRoleDefaults(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", root)
+	_, err := rurushuconfig.Save(rurushuconfig.Config{
+		Duel: rurushuconfig.DuelConfig{
+			Left:      rurushuconfig.RoleConfig{Provider: "cos", Model: "chatgpt-web"},
+			Right:     rurushuconfig.RoleConfig{Provider: "ollama", Model: "configured-right"},
+			OllamaURL: "http://configured:11434",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := rurushuconfig.LoadForDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Duel.Left.Provider != "cos" || cfg.Duel.Right.Provider != "ollama" || cfg.Duel.Right.Model != "configured-right" {
+		t.Fatalf("duel defaults=%#v", cfg.Duel)
+	}
+}
+func TestDuelResumeRequiresState(t *testing.T) {
+	if err := runDuel([]string{"--cwd", t.TempDir(), "--resume"}); err == nil {
+		t.Fatal("missing state accepted")
+	}
+}
+
+func TestDuelLockRejectsSecondInstanceInSameWorkspace(t *testing.T) {
+	store, err := projectstate.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := acquireDuelLock(store.Dir, store.ProjectRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Release()
+	if _, err := acquireDuelLock(store.Dir, store.ProjectRoot); err == nil || !strings.Contains(err.Error(), "already active") {
+		t.Fatalf("second instance was not rejected: %v", err)
+	}
+}
+
+func TestDuelLockAllowsDifferentWorkspaces(t *testing.T) {
+	storeA, err := projectstate.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	storeB, err := projectstate.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := acquireDuelLock(storeA.Dir, storeA.ProjectRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Release()
+	b, err := acquireDuelLock(storeB.Dir, storeB.ProjectRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Release()
+}
+
+func TestDuelLockReclaimsStaleOwner(t *testing.T) {
+	store, err := projectstate.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(store.Dir, "duel-active.lock")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(duelLockMeta{PID: 2147483647, StartedAt: time.Now().Add(-time.Hour), CWD: store.ProjectRoot, Token: "stale"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "owner.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := acquireDuelLock(store.Dir, store.ProjectRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Release()
+	owner, err := os.ReadFile(filepath.Join(dir, "owner.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var meta duelLockMeta
+	if err := json.Unmarshal(owner, &meta); err != nil {
+		t.Fatal(err)
+	}
+	if meta.PID != os.Getpid() || meta.Token == "stale" {
+		t.Fatalf("stale lock was not replaced: %+v", meta)
+	}
+}
+
+func TestDuelLockCanRestartAfterReleaseForErrorOrInterrupt(t *testing.T) {
+	for _, outcome := range []string{"error", "interrupted"} {
+		t.Run(outcome, func(t *testing.T) {
+			store, err := projectstate.Open(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			first, err := acquireDuelLock(store.Dir, store.ProjectRoot)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := first.Release(); err != nil {
+				t.Fatal(err)
+			}
+			second, err := acquireDuelLock(store.Dir, store.ProjectRoot)
+			if err != nil {
+				t.Fatalf("restart after %s failed: %v", outcome, err)
+			}
+			defer second.Release()
+		})
+	}
+}
+
+func TestResolveDuelStateReusesExistingPairByDefault(t *testing.T) {
+	dir := t.TempDir()
+	store, err := projectstate.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	left, err := store.StartSession("chatgpt-web", "cos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	right, err := store.StartSession("chatgpt-web", "cos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(store.Dir, "duel-state.json")
+	want := duelState{Goal: "keep improving", LeftID: left.ID, RightID: right.ID, Rounds: 4, Status: "interrupted", Summary: "saved"}
+	if err := saveDuelState(path, want); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadDir(filepath.Join(store.Dir, "sessions"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, reused, err := resolveDuelState(store, path, "keep improving", false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadDir(filepath.Join(store.Dir, "sessions"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reused || !reflect.DeepEqual(got, want) {
+		t.Fatalf("got=%+v reused=%v want=%+v", got, reused, want)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("default resume created sessions: before=%d after=%d", len(before), len(after))
+	}
+}
+
+func TestCreateDuelStateWithLeftReusesExistingSession(t *testing.T) {
+	root := t.TempDir()
+	store, err := projectstate.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	left, err := store.StartSession("chatgpt-web", "cos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(store.Dir, "duel-state.json")
+	state, err := createDuelStateWithLeft(
+		store,
+		path,
+		"continue current work",
+		left.ID,
+		duelRoleConfig{Provider: "cos", Model: "chatgpt-web"},
+		duelRoleConfig{Provider: "ollama", Model: "qwen3:8b"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.LeftID != left.ID {
+		t.Fatalf("left session=%q want existing %q", state.LeftID, left.ID)
+	}
+	if state.RightID == "" || state.RightID == left.ID {
+		t.Fatalf("right session=%q", state.RightID)
+	}
+	if state.LeftProvider != "cos" || state.LeftModel != "chatgpt-web" {
+		t.Fatalf("left config=%s/%s", state.LeftProvider, state.LeftModel)
+	}
+}
+
+func TestReconcileDuelStateForLeftRepairsDuplicateRightSession(t *testing.T) {
+	root := t.TempDir()
+	store, err := projectstate.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	left, err := store.StartSession("chatgpt-web", "cos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(store.Dir, "duel-state.json")
+	broken := duelState{
+		Goal:          "continue work",
+		LeftID:        left.ID,
+		RightID:       left.ID,
+		LeftProvider:  "cos",
+		LeftModel:     "chatgpt-web",
+		RightProvider: "cos",
+		RightModel:    "chatgpt-web",
+		Rounds:        7,
+		Status:        "error",
+	}
+	if err := saveDuelState(path, broken); err != nil {
+		t.Fatal(err)
+	}
+
+	state, reused, err := reconcileDuelStateForLeft(
+		store,
+		path,
+		"",
+		left.ID,
+		duelRoleConfig{Provider: "cos", Model: "chatgpt-web"},
+		duelRoleConfig{Provider: "ollama", Model: "qwen3:8b"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reused {
+		t.Fatal("expected existing state to be reused")
+	}
+	if state.LeftID != left.ID {
+		t.Fatalf("left=%q want=%q", state.LeftID, left.ID)
+	}
+	if state.RightID == "" || state.RightID == left.ID {
+		t.Fatalf("right session was not repaired: %q", state.RightID)
+	}
+	if state.RightProvider != "ollama" || state.RightModel != "qwen3:8b" {
+		t.Fatalf("right config=%s/%s", state.RightProvider, state.RightModel)
+	}
+	if state.Rounds != 7 || state.Goal != "continue work" {
+		t.Fatalf("state history lost: %+v", state)
+	}
+	if state.Status != "running" || state.LastError != "" {
+		t.Fatalf("state not recovered: status=%q err=%q", state.Status, state.LastError)
+	}
+	if _, err := loadDuelState(path); err != nil {
+		t.Fatalf("repaired state is still invalid: %v", err)
+	}
+}
+
+func TestReconcileDuelStateForLeftUsesActiveLeftConfigInsteadOfStaleSessionModel(t *testing.T) {
+	root := t.TempDir()
+	store, err := projectstate.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	left, err := store.StartSession("openaicodex/gpt-6.1-sol", "cos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(store.Dir, "duel-state.json")
+	state, _, err := reconcileDuelStateForLeft(
+		store,
+		path,
+		"continue work",
+		left.ID,
+		duelRoleConfig{Provider: "cos", Model: "chatgpt-web"},
+		duelRoleConfig{Provider: "ollama", Model: "qwen3:8b"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.LeftProvider != "cos" || state.LeftModel != "chatgpt-web" {
+		t.Fatalf("left config=%s/%s", state.LeftProvider, state.LeftModel)
+	}
+}
+
+func TestReconcileDuelStateForLeftReplacesRightWhenConfigChanges(t *testing.T) {
+	root := t.TempDir()
+	store, err := projectstate.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	left, _ := store.StartSession("chatgpt-web", "cos")
+	oldRight, _ := store.StartSession("chatgpt-web", "cos")
+	path := filepath.Join(store.Dir, "duel-state.json")
+	if err := saveDuelState(path, duelState{
+		Goal:          "continue work",
+		LeftID:        left.ID,
+		RightID:       oldRight.ID,
+		LeftProvider:  "cos",
+		LeftModel:     "chatgpt-web",
+		RightProvider: "cos",
+		RightModel:    "chatgpt-web",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	state, _, err := reconcileDuelStateForLeft(
+		store,
+		path,
+		"",
+		left.ID,
+		duelRoleConfig{Provider: "cos", Model: "chatgpt-web"},
+		duelRoleConfig{Provider: "ollama", Model: "qwen3:8b"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.RightID == oldRight.ID {
+		t.Fatal("RIGHT session was reused despite provider/model config change")
+	}
+	if state.RightProvider != "ollama" || state.RightModel != "qwen3:8b" {
+		t.Fatalf("right config=%s/%s", state.RightProvider, state.RightModel)
+	}
+}
+
+func TestResolveDuelStateRequiresNewForDifferentGoal(t *testing.T) {
+	dir := t.TempDir()
+	store, err := projectstate.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	left, _ := store.StartSession("chatgpt-web", "cos")
+	right, _ := store.StartSession("chatgpt-web", "cos")
+	path := filepath.Join(store.Dir, "duel-state.json")
+	if err := saveDuelState(path, duelState{Goal: "old goal", LeftID: left.ID, RightID: right.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := resolveDuelState(store, path, "new goal", false, false); err == nil || !strings.Contains(err.Error(), "--new") {
+		t.Fatalf("different goal should require --new, got %v", err)
+	}
+}
+
+func TestResolveDuelStateNewCreatesFreshPair(t *testing.T) {
+	dir := t.TempDir()
+	store, err := projectstate.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldLeft, _ := store.StartSession("chatgpt-web", "cos")
+	oldRight, _ := store.StartSession("chatgpt-web", "cos")
+	path := filepath.Join(store.Dir, "duel-state.json")
+	if err := saveDuelState(path, duelState{Goal: "old", LeftID: oldLeft.ID, RightID: oldRight.ID}); err != nil {
+		t.Fatal(err)
+	}
+	got, reused, err := resolveDuelState(store, path, "new", false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reused || got.Goal != "new" || got.LeftID == oldLeft.ID || got.RightID == oldRight.ID || got.LeftID == got.RightID {
+		t.Fatalf("fresh duel not created correctly: %+v reused=%v", got, reused)
+	}
+}
+
+func TestResolveDuelStateCreatesIndependentProviderModelSessions(t *testing.T) {
+	dir := t.TempDir()
+	store, err := projectstate.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(store.Dir, "duel-state.json")
+	got, reused, err := resolveDuelState(store, path, "mixed backends", false, true,
+		duelRoleConfig{Provider: "cos", Model: "left-model"},
+		duelRoleConfig{Provider: "openai-compatible", Model: "right-model"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reused {
+		t.Fatal("new duel unexpectedly reused state")
+	}
+	if got.LeftProvider != "cos" || got.LeftModel != "left-model" || got.RightProvider != "openai-compatible" || got.RightModel != "right-model" {
+		t.Fatalf("state role config=%+v", got)
+	}
+	left, err := store.LoadSession(got.LeftID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	right, err := store.LoadSession(got.RightID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if left.Provider != "cos" || left.Model != "left-model" || right.Provider != "openai-compatible" || right.Model != "right-model" {
+		t.Fatalf("sessions left=%+v right=%+v", left, right)
+	}
+}
+
+func TestNormalizeDuelRoleConfigKeepsOllama(t *testing.T) {
+	got := normalizeDuelRoleConfig(duelRoleConfig{Provider: " OLLAMA ", Model: " qwen3:8b "})
+	if got.Provider != "ollama" || got.Model != "qwen3:8b" {
+		t.Fatalf("normalized=%+v", got)
+	}
+}
+
+func TestResolveDuelStateRejectsResumeAndNew(t *testing.T) {
+	store, err := projectstate.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := resolveDuelState(store, filepath.Join(store.Dir, "duel-state.json"), "goal", true, true); err == nil {
+		t.Fatal("--resume --new accepted")
+	}
+}
+func TestDuelStatePersistence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "duel-state.json")
+	wantTime := time.Date(2026, 10, 27, 15, 42, 0, 0, time.FixedZone("TST", 8*60*60))
+	want := duelState{Goal: "goal", LeftID: "l", RightID: "r", Rounds: 3, RoundTimes: []time.Time{wantTime}}
+	if err := saveDuelState(path, want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := loadDuelState(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.RoundTimes) != 1 || !got.RoundTimes[0].Equal(wantTime) {
+		t.Fatalf("round timestamp did not persist: got=%v want=%v", got.RoundTimes, wantTime)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Fatalf("permissions: %v", info.Mode())
+	}
+}
+
+func TestLoadDuelStatePreservesResumeContext(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "duel-state.json")
+	started := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	want := duelState{
+		Goal:            "continue improving",
+		LeftID:          "left-session",
+		RightID:         "right-session",
+		Mode:            "recurring",
+		PollEvery:       "30s",
+		StartedAt:       started,
+		Deadline:        started.Add(10 * time.Minute),
+		NextPollAt:      started.Add(90 * time.Second),
+		LastAction:      "wait",
+		LastObservation: "executor attempts=0 Evidence: arm window expired",
+		Rounds:          7,
+		Status:          "interrupted",
+		Summary:         "round seven uncovered an edge case",
+	}
+	if err := saveDuelState(path, want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := loadDuelState(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("resume state mismatch: got %+v want %+v", got, want)
+	}
+}
+
+func TestResolveDuelStateResumeDoesNotResetRecurringDeadline(t *testing.T) {
+	dir := t.TempDir()
+	store, err := projectstate.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	left, err := store.StartSession("chatgpt-web", "cos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	right, err := store.StartSession("chatgpt-web", "cos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	want := duelState{
+		Goal:            "recurring resume",
+		LeftID:          left.ID,
+		RightID:         right.ID,
+		Mode:            "recurring",
+		PollEvery:       "30s",
+		StartedAt:       started,
+		Deadline:        started.Add(10 * time.Minute),
+		NextPollAt:      started.Add(2 * time.Minute),
+		LastAction:      "wait",
+		LastObservation: "observer still running Evidence: no READY_TO_SEND",
+		Rounds:          3,
+		Status:          "interrupted",
+		Summary:         "saved evidence",
+	}
+	path := filepath.Join(store.Dir, "duel-state.json")
+	if err := saveDuelState(path, want); err != nil {
+		t.Fatal(err)
+	}
+	got, reused, err := resolveDuelState(store, path, "", true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reused || !reflect.DeepEqual(got, want) {
+		t.Fatalf("resume changed recurring schedule: got=%+v reused=%v want=%+v", got, reused, want)
+	}
+}
+
+func TestUpdateRecurringScheduleOnResume(t *testing.T) {
+	now := time.Date(2026, 10, 28, 1, 0, 0, 0, time.UTC)
+	original := duelState{Mode: "recurring", PollEvery: "30s", Deadline: now.Add(time.Hour), NextPollAt: now.Add(5 * time.Minute)}
+	state := original
+	if err := updateRecurringSchedule(&state, now, 0, false, 0, false); err != nil || !reflect.DeepEqual(state, original) {
+		t.Fatalf("ordinary resume changed schedule: %+v %v", state, err)
+	}
+	if err := updateRecurringSchedule(&state, now, 610*time.Minute, true, 30*time.Minute, true); err != nil {
+		t.Fatal(err)
+	}
+	if !state.Deadline.Equal(now.Add(610*time.Minute)) || state.PollEvery != "30m0s" || !state.NextPollAt.Equal(now) {
+		t.Fatalf("unexpected renewed schedule: %+v", state)
+	}
+	if err := updateRecurringSchedule(&state, now, time.Minute, true, 0, false); err != nil || !state.Deadline.Equal(now.Add(610*time.Minute)) {
+		t.Fatalf("resume shortened the deadline: %+v %v", state, err)
+	}
+	if err := updateRecurringSchedule(&state, now, 0, true, 0, false); err == nil {
+		t.Fatal("explicit zero lifetime accepted")
+	}
+}
+
+func TestRecurringInitialSummaryIncludesPersistedObservation(t *testing.T) {
+	state := duelState{
+		Mode:            "recurring",
+		Summary:         "short summary",
+		LastAction:      "wait",
+		LastObservation: "executor attempts=0 Evidence: arm window expired",
+	}
+	got := recurringInitialSummary(state)
+	if !strings.Contains(got, "attempts=0") || !strings.Contains(got, "arm window expired") {
+		t.Fatalf("resume summary lost recurring observation: %q", got)
+	}
+}
+
+func TestApplyDuelTurnStateCountsLeftAndPersistsRightFeedback(t *testing.T) {
+	state := duelState{Mode: "recurring", Rounds: 4}
+	shown := applyDuelTurnState(&state, "left", duel.Turn{Action: "work", Summary: "executor checked"})
+	if shown != 5 || state.Rounds != 5 || state.Summary != "executor checked" {
+		t.Fatalf("left state=%+v shown=%d", state, shown)
+	}
+	shown = applyDuelTurnState(&state, "right", duel.Turn{Action: "feedback", Summary: "再檢查 gas"})
+	if shown != 5 || state.Rounds != 5 || state.LastAction != "feedback" || state.LastObservation != "再檢查 gas" {
+		t.Fatalf("right state=%+v shown=%d", state, shown)
+	}
+}
+
+func TestEnsureRoundTimePreservesExistingTimestampAcrossResume(t *testing.T) {
+	first := time.Date(2026, 10, 27, 15, 42, 0, 0, time.FixedZone("TST", 8*60*60))
+	later := first.Add(2 * time.Hour)
+	state := duelState{}
+	if got := ensureRoundTime(&state, 1, first); !got.Equal(first) {
+		t.Fatalf("first timestamp=%v want=%v", got, first)
+	}
+	if got := ensureRoundTime(&state, 1, later); !got.Equal(first) {
+		t.Fatalf("timestamp drifted on resume: got=%v want=%v", got, first)
+	}
+}
+
+func TestLoadLegacyDuelStateWithoutRoundTimes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "duel-state.json")
+	legacy := `{"goal":"legacy","left_session":"left","right_session":"right","rounds":4,"status":"interrupted","summary":"saved"}`
+	if err := os.WriteFile(path, []byte(legacy), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := loadDuelState(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Rounds != 4 || len(got.RoundTimes) != 0 {
+		t.Fatalf("legacy state changed unexpectedly: %+v", got)
+	}
+}
+
+func TestLoadDuelStateRejectsInvalidSavedSessions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "duel-state.json")
+	if err := os.WriteFile(path, []byte(`{"goal":"g","left_session":"same","right_session":"same"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadDuelState(path); err == nil {
+		t.Fatal("invalid saved duel state accepted")
+	}
+}
+
+func TestApplyDuelResultPersistsTerminalState(t *testing.T) {
+	tests := []struct {
+		name       string
+		err        error
+		result     duel.Result
+		wantStatus string
+		wantSum    string
+	}{
+		{name: "owner review", result: duel.Result{Status: "owner_review", Summary: "verified"}, wantStatus: "owner_review", wantSum: "verified"},
+		{name: "cancelled", err: context.Canceled, wantStatus: "interrupted", wantSum: "previous"},
+		{name: "provider error", err: errors.New("provider failed"), wantStatus: "error", wantSum: "previous"},
+		{name: "error with partial summary", err: errors.New("provider failed"), result: duel.Result{Summary: "partial"}, wantStatus: "error", wantSum: "partial"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state := duelState{Status: "running", Summary: "previous"}
+			applyDuelResult(&state, tt.result, tt.err)
+			if state.Status != tt.wantStatus || state.Summary != tt.wantSum {
+				t.Fatalf("state=%+v want status=%q summary=%q", state, tt.wantStatus, tt.wantSum)
+			}
+			if tt.err != nil && !errors.Is(tt.err, context.Canceled) && state.LastError != tt.err.Error() {
+				t.Fatalf("last error=%q want=%q", state.LastError, tt.err.Error())
+			}
+			if (tt.err == nil || errors.Is(tt.err, context.Canceled)) && state.LastError != "" {
+				t.Fatalf("unexpected last error=%q", state.LastError)
+			}
+		})
+	}
+}
